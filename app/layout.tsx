@@ -3,8 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "CafeLine",
-    template: "%s | CafeLine",
+    default: "Cafely",
+    template: "%s | Cafely",
   },
   description: "Быстрое оформление заказов в кафе.",
 };

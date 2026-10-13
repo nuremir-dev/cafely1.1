@@ -100,21 +100,14 @@ export function PosScreen() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem]">
-      <section aria-labelledby="catalog-title" className="min-w-0">
+    <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_30rem] xl:gap-5">
+      <section aria-labelledby="catalog-title" className="min-w-0 rounded-[1.7rem] border border-white/80 bg-white/90 p-5 shadow-[0_10px_34px_rgba(56,72,65,0.08)] backdrop-blur-xl sm:p-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 id="catalog-title" className="text-2xl font-bold tracking-tight">Касса</h1>
-            <p className="mt-1 text-sm text-slate-600">Выберите блюда — они сразу появятся в корзине.</p>
+          <h1 id="catalog-title" className="text-2xl font-bold tracking-[-0.04em] text-slate-950">Каталог блюд</h1>
+          <div className="relative w-full sm:w-72">
+            <svg viewBox="0 0 24 24" className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>
+            <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск по названию" className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-11 pr-4 text-sm outline-none placeholder:text-slate-400 focus:border-primary" aria-label="Поиск блюда" />
           </div>
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск блюда"
-            className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-base outline-none placeholder:text-slate-400 focus:border-primary sm:w-64"
-            aria-label="Поиск блюда"
-          />
         </div>
 
         {catalog && (
@@ -135,33 +128,34 @@ export function PosScreen() {
         )}
 
         {errorMessage && <p role="alert" className="rounded-xl bg-red-50 p-4 text-red-700">{errorMessage}</p>}
-        {!catalog && !errorMessage && <p className="rounded-xl bg-surface p-5 text-slate-600">Загрузка меню…</p>}
-        {catalog && visibleItems.length === 0 && <p className="rounded-xl bg-surface p-5 text-slate-600">Ничего не найдено.</p>}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {!catalog && !errorMessage && <p className="rounded-xl bg-surface-muted p-5 text-slate-600">Загрузка меню…</p>}
+        {catalog && visibleItems.length === 0 && <p className="rounded-xl bg-surface-muted p-5 text-slate-600">Ничего не найдено.</p>}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
           {visibleItems.map((item) => (
             <button
               type="button"
               key={item.id}
               onClick={() => cart.add(item)}
               disabled={isSubmitting}
-              className="min-h-28 rounded-2xl border border-border bg-surface p-4 text-left shadow-sm transition hover:border-primary hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-wait disabled:opacity-60"
+              className="min-h-28 rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-[0_2px_7px_rgba(15,23,42,0.025)] transition hover:-translate-y-px hover:border-primary hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-wait disabled:opacity-60"
             >
               <span className="block text-base font-semibold">{item.name}</span>
               <span className="mt-3 block text-lg font-bold text-primary-strong">{formatSom(item.priceTyiyn)}</span>
             </button>
           ))}
         </div>
+        <p className="mt-5 flex items-center gap-2 text-sm text-slate-400"><span className="grid size-5 place-items-center rounded-full bg-slate-100 text-xs font-bold">i</span>Нажмите на блюдо, чтобы добавить в корзину</p>
       </section>
 
-      <aside aria-labelledby="cart-title" className="lg:sticky lg:top-5 lg:self-start">
-        <div className="rounded-2xl border border-border bg-surface p-5 shadow-sm">
+      <aside aria-labelledby="cart-title" className="xl:sticky xl:top-5 xl:self-start">
+        <div className="rounded-[1.7rem] border border-white/80 bg-white/90 p-5 shadow-[0_10px_34px_rgba(56,72,65,0.08)] backdrop-blur-xl sm:p-6">
           <div className="flex items-center justify-between gap-3">
             <h2 id="cart-title" className="text-xl font-bold">Корзина</h2>
             <button
               type="button"
               onClick={cart.clear}
               disabled={cart.items.length === 0 || isSubmitting}
-              className="text-sm font-medium text-slate-600 underline disabled:cursor-not-allowed disabled:opacity-40"
+              className="text-sm font-semibold text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Очистить
             </button>
@@ -169,12 +163,12 @@ export function PosScreen() {
           {cart.items.length === 0 ? (
             <p className="py-12 text-center text-sm text-slate-500">Корзина пуста</p>
           ) : (
-            <ul className="my-5 divide-y divide-border">
+            <ul className="my-5 space-y-2.5">
               {cart.items.map((item) => (
-                <li key={item.menuItemId} className="py-3 first:pt-0">
+                <li key={item.menuItemId} className="rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-[0_2px_7px_rgba(15,23,42,0.02)]">
                   <div className="flex items-start justify-between gap-3">
                     <p className="font-medium">{item.name}</p>
-                    <p className="whitespace-nowrap font-semibold">{formatSom(item.priceTyiyn * item.quantity)}</p>
+                    <p className="whitespace-nowrap text-lg font-bold">{formatSom(item.priceTyiyn * item.quantity)}</p>
                   </div>
                   <div className="mt-3 flex items-center justify-between">
                     <div className="flex items-center gap-2" aria-label={`Количество: ${item.name}`}>
@@ -182,18 +176,18 @@ export function PosScreen() {
                       <span className="w-6 text-center font-semibold">{item.quantity}</span>
                       <QuantityButton disabled={isSubmitting} label={`Увеличить ${item.name}`} onClick={() => cart.increase(item.menuItemId)}>+</QuantityButton>
                     </div>
-                    <button type="button" disabled={isSubmitting} onClick={() => cart.remove(item.menuItemId)} className="text-sm text-slate-500 underline disabled:cursor-wait disabled:opacity-40">Удалить</button>
+                    <button type="button" aria-label={`Удалить ${item.name}`} disabled={isSubmitting} onClick={() => cart.remove(item.menuItemId)} className="text-sm text-slate-400 hover:text-red-500 disabled:cursor-wait disabled:opacity-40">Удалить</button>
                   </div>
                 </li>
               ))}
             </ul>
           )}
-          <div className="border-t border-border pt-4">
-            <div className="flex items-baseline justify-between gap-3">
+          <div className="pt-3">
+            <div className="flex items-baseline justify-between gap-3 rounded-2xl bg-[#e7f7f4] px-5 py-5">
               <span className="text-lg font-bold">Итого</span>
               <output className="text-2xl font-bold text-primary-strong">{formatSom(totalTyiyn)}</output>
             </div>
-            <button type="button" onClick={submitOrder} disabled={cart.items.length === 0 || isSubmitting} className="mt-5 w-full rounded-xl bg-primary px-4 py-4 text-base font-bold text-white transition hover:bg-primary-strong disabled:cursor-not-allowed disabled:opacity-40">
+            <button type="button" onClick={submitOrder} disabled={cart.items.length === 0 || isSubmitting} className="mt-4 w-full rounded-2xl bg-primary px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(17,170,160,0.2)] transition hover:bg-primary-strong disabled:cursor-not-allowed disabled:opacity-40">
               {isSubmitting ? "Сохранение…" : "Оформить заказ"}
             </button>
             {checkoutMessage && (
