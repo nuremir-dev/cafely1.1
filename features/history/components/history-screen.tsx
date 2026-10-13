@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { formatSom } from "@/features/cart/cart";
 import type { HistoryOrder, HistoryPage, OrderDetails } from "@/features/history/types";
+import type { PrintJob } from "@/features/orders/types";
 import { printOrder } from "@/features/printing/qz-client";
 
 type HistoryResponse = { data: HistoryPage };
@@ -57,13 +58,13 @@ export function HistoryScreen() {
     }
   }
 
-  async function retryPrint(type: "customer" | "kitchen") {
+  async function retryPrint(job: PrintJob) {
     if (!selectedOrder) return;
     const retryOrder = { ...selectedOrder, created: false };
     await printOrder(retryOrder, async (job, status, lastError) => {
       await fetch(`/api/print-jobs/${job.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, lastError: lastError ?? null }) });
       setSelectedOrder((current) => current ? { ...current, printJobs: current.printJobs.map((item) => item.id === job.id ? { ...item, status, lastError: status === "failed" ? lastError ?? "Ошибка печати" : null, attempts: item.attempts + 1 } : item) } : current);
-    }, type);
+    }, job.type, job.id);
   }
 
   return (
@@ -106,8 +107,8 @@ export function HistoryScreen() {
   );
 }
 
-function OrderDetailView({ order, onRetry }: { order: OrderDetails; onRetry: (type: "customer" | "kitchen") => Promise<void> }) {
-  return <div className="mt-5 space-y-5"><div className="text-sm text-slate-600"><p><strong className="text-foreground">Заказ №{order.orderNumber}</strong></p><p>{formatDateTime(order.createdAt)}</p><p>{order.cashierName}</p></div><ul className="divide-y divide-border border-y border-border">{order.items.map((item) => <li key={item.menuItemId} className="flex justify-between gap-3 py-3"><span>{item.itemName} × {item.quantity}<small className="mt-1 block text-slate-500">{formatSom(item.unitPriceTyiyn)} за шт.</small></span><strong className="whitespace-nowrap">{formatSom(item.lineTotalTyiyn)}</strong></li>)}</ul><div className="flex justify-between text-lg font-bold"><span>Итого</span><span className="text-primary-strong">{formatSom(order.totalTyiyn)}</span></div><div><h3 className="font-semibold">Печать</h3><ul className="mt-2 space-y-2">{order.printJobs.map((job) => <li key={job.id} className="rounded-lg bg-surface-muted p-3 text-sm"><p><strong>{job.type === "customer" ? "Квитанция посетителя" : "Кухонный чек"}</strong>: {printStatus(job.status)}</p>{job.lastError && <p className="mt-1 text-red-700">Ошибка: {job.lastError}</p>}{job.status === "failed" && <button type="button" onClick={() => void onRetry(job.type)} className="mt-2 underline">Повторить печать</button>}</li>)}</ul></div></div>;
+function OrderDetailView({ order, onRetry }: { order: OrderDetails; onRetry: (job: PrintJob) => Promise<void> }) {
+  return <div className="mt-5 space-y-5"><div className="text-sm text-slate-600"><p><strong className="text-foreground">Заказ №{order.orderNumber}</strong></p><p>{formatDateTime(order.createdAt)}</p><p>{order.cashierName}</p></div><ul className="divide-y divide-border border-y border-border">{order.items.map((item) => <li key={item.menuItemId} className="flex justify-between gap-3 py-3"><span>{item.itemName} × {item.quantity}<small className="mt-1 block text-slate-500">{formatSom(item.unitPriceTyiyn)} за шт.</small></span><strong className="whitespace-nowrap">{formatSom(item.lineTotalTyiyn)}</strong></li>)}</ul><div className="flex justify-between text-lg font-bold"><span>Итого</span><span className="text-primary-strong">{formatSom(order.totalTyiyn)}</span></div><div><h3 className="font-semibold">Печать</h3><ul className="mt-2 space-y-2">{order.printJobs.map((job) => <li key={job.id} className="rounded-lg bg-surface-muted p-3 text-sm"><p><strong>{job.type === "customer" ? "Квитанция посетителя" : "Кухонный чек"}</strong>: {printStatus(job.status)}</p>{job.lastError && <p className="mt-1 text-red-700">Ошибка: {job.lastError}</p>}{job.status === "failed" && <button type="button" onClick={() => void onRetry(job)} className="mt-2 underline">Повторить печать</button>}</li>)}</ul></div></div>;
 }
 
 function formatDateTime(value: string): string {

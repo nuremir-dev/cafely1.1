@@ -3,11 +3,15 @@ export type MenuItem = {
   categoryId: string;
   name: string;
   priceTyiyn: number;
+  fulfillmentType: FulfillmentType;
 };
+
+export type FulfillmentType = "kitchen" | "counter" | "beverage";
 
 export type MenuCategory = {
   id: string;
   name: string;
+  fulfillmentType: FulfillmentType;
   items: MenuItem[];
 };
 

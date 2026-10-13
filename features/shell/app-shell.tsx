@@ -8,7 +8,7 @@ import { LogoutButton } from "@/features/auth/components/logout-button";
 import type { Session } from "@/features/auth/types";
 import { getPrinterSettings, getQzPrinters } from "@/features/printing/qz-client";
 
-type NavigationItem = { href: string; label: string; icon: "sale" | "history" | "reports" | "menu" };
+type NavigationItem = { href: string; label: string; icon: "sale" | "history" | "reports" | "menu" | "tables" };
 
 const navigation: NavigationItem[] = [
   { href: "/pos", label: "Продажа", icon: "sale" },
@@ -21,7 +21,7 @@ export function AppShell({ children, session }: { children: ReactNode; session: 
   const [now, setNow] = useState(() => new Date());
   const [printerState, setPrinterState] = useState<"checking" | "ready" | "unavailable">("checking");
   const [printerSettings] = useState<{ customerPrinter: string; kitchenPrinter: string } | null>(() => typeof window === "undefined" ? null : getPrinterSettings());
-  const links = session.role === "admin" ? [...navigation, { href: "/admin/menu", label: "Меню", icon: "menu" as const }] : navigation;
+  const links = session.role === "admin" ? [...navigation, { href: "/admin/menu", label: "Меню", icon: "menu" as const }, { href: "/admin/tables", label: "Столы", icon: "tables" as const }] : navigation;
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
@@ -48,7 +48,7 @@ export function AppShell({ children, session }: { children: ReactNode; session: 
     <div className="min-h-screen bg-[#edf2f0] text-slate-900">
       <div className="fixed inset-0 -z-10 bg-[url('/images/cafe-login-background.png')] bg-cover bg-center opacity-[0.14]" />
       <div className="mx-auto min-h-screen max-w-[1600px] px-3 py-3 sm:px-5 sm:py-5">
-        <header className="flex min-h-[5.25rem] items-center gap-3 rounded-[1.7rem] border border-white/80 bg-white/90 px-4 shadow-[0_10px_34px_rgba(56,72,65,0.1)] backdrop-blur-xl sm:px-7">
+        {pathname !== "/pos" && <header className="flex min-h-[5.25rem] items-center gap-3 rounded-[1.7rem] border border-white/80 bg-white/90 px-4 shadow-[0_10px_34px_rgba(56,72,65,0.1)] backdrop-blur-xl sm:px-7">
           <Link href="/pos" className="flex shrink-0 items-center gap-2.5" aria-label="CafeLine, перейти к продаже">
             <span className="grid size-11 place-items-center rounded-2xl bg-[#e4f5f1] text-primary-strong"><CoffeeIcon className="size-7" /></span>
             <span className="hidden text-[1.55rem] font-bold tracking-[-0.045em] text-slate-950 sm:block">Cafely</span>
@@ -64,9 +64,9 @@ export function AppShell({ children, session }: { children: ReactNode; session: 
             <div className="text-right leading-tight"><p className="text-lg font-bold tracking-tight text-slate-900" suppressHydrationWarning>{time}</p><p className="hidden text-xs text-slate-500 sm:block" suppressHydrationWarning>{date}</p></div>
             <div className="hidden sm:block"><LogoutButton /></div>
           </div>
-        </header>
+        </header>}
 
-        <div className="mt-3 flex gap-3 sm:mt-5 sm:gap-5">
+        <div className={`${pathname === "/pos" ? "" : "mt-3 sm:mt-5"} flex gap-3 sm:gap-5`}>
           <aside className="hidden w-[12.2rem] shrink-0 rounded-[1.7rem] border border-white/80 bg-white/90 p-3 shadow-[0_10px_34px_rgba(56,72,65,0.08)] backdrop-blur-xl lg:block">
             <nav className="space-y-1.5" aria-label="Основная навигация">
               {links.map((link) => <NavigationLink key={link.href} link={link} active={pathname === link.href} />)}
@@ -97,6 +97,7 @@ function ShellIcon({ className, name }: { className?: string; name: NavigationIt
     history: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3.5 2" /></>,
     reports: <><path d="M4 20V11M10 20V4M16 20v-7M22 20V8" /></>,
     menu: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h3" /></>,
+    tables: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M15 4v16M3 12h18" /></>,
   };
   return <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }

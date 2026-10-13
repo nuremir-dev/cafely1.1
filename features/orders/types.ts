@@ -17,6 +17,7 @@ export type PrintJob = {
 export type CreatedOrder = {
   id: string;
   orderNumber: number;
+  tableNumber?: number | null;
   totalTyiyn: number;
   cashierName: string;
   createdAt: string;

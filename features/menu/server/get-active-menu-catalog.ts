@@ -1,9 +1,9 @@
 import "server-only";
 
-import type { MenuCatalog } from "@/features/menu/types";
+import type { FulfillmentType, MenuCatalog } from "@/features/menu/types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
-type CategoryRow = { id: string; name: string };
+type CategoryRow = { id: string; name: string; fulfillment_type: FulfillmentType };
 type MenuItemRow = {
   id: string;
   category_id: string;
@@ -16,7 +16,7 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
   const [categoriesResult, itemsResult] = await Promise.all([
     supabase
       .from("categories")
-      .select("id, name")
+      .select("id, name, fulfillment_type")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
@@ -42,11 +42,13 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
     categories: ((categoriesResult.data ?? []) as CategoryRow[]).map((category) => ({
       id: category.id,
       name: category.name,
+      fulfillmentType: category.fulfillment_type,
       items: (itemsByCategory.get(category.id) ?? []).map((item) => ({
         id: item.id,
         categoryId: item.category_id,
         name: item.name,
         priceTyiyn: item.price_tyiyn,
+        fulfillmentType: category.fulfillment_type,
       })),
     })),
   };

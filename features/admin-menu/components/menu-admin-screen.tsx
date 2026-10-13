@@ -20,6 +20,7 @@ export function MenuAdminScreen({ initialData }: { initialData: AdminMenuData })
       name: String(new FormData(form).get("name") ?? ""),
       sortOrder: Number(new FormData(form).get("sortOrder")),
       isActive: new FormData(form).has("isActive"),
+      fulfillmentType: String(new FormData(form).get("fulfillmentType") ?? "kitchen"),
     });
     if (!id) form.reset();
   }
@@ -76,8 +77,9 @@ export function MenuAdminScreen({ initialData }: { initialData: AdminMenuData })
 
       <section className="rounded-2xl border border-border bg-surface p-5" aria-labelledby="categories-title">
         <h2 id="categories-title" className="text-lg font-bold">Категории</h2>
-        <form onSubmit={(event) => void submitCategory(event)} className="mt-4 grid gap-3 md:grid-cols-[1fr_8rem_auto_auto]">
+        <form onSubmit={(event) => void submitCategory(event)} className="mt-4 grid gap-3 md:grid-cols-[1fr_10rem_8rem_auto_auto]">
           <TextField name="name" label="Новая категория" required />
+          <FulfillmentField />
           <NumberField name="sortOrder" label="Порядок" defaultValue="0" />
           <label className="flex items-end gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked /> Активна</label>
           <button disabled={isSaving} className="self-end rounded-xl bg-primary px-4 py-3 font-semibold text-white disabled:opacity-50">Добавить</button>
@@ -124,7 +126,11 @@ function PrinterSettingsPanel() {
 function PrinterSelect({ label, onChange, printers, value }: { label: string; onChange: (value: string) => void; printers: string[]; value: string }) { return <label className="grid gap-1 text-sm font-medium">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="rounded-lg border border-border bg-white px-3 py-2.5"><option value="">Не выбран</option>{printers.map((printer) => <option key={printer} value={printer}>{printer}</option>)}</select></label>; }
 
 function CategoryForm({ category, isSaving, onSubmit }: { category: AdminCategory; isSaving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>, id: string) => Promise<void> }) {
-  return <form onSubmit={(event) => void onSubmit(event, category.id)} className="grid gap-3 rounded-xl bg-surface-muted p-3 md:grid-cols-[1fr_8rem_auto_auto]"><TextField name="name" label="Название" defaultValue={category.name} required /><NumberField name="sortOrder" label="Порядок" defaultValue={String(category.sortOrder)} /><label className="flex items-end gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked={category.isActive} /> Активна</label><button disabled={isSaving} className="self-end rounded-xl border border-border px-4 py-3 font-semibold disabled:opacity-50">Сохранить</button></form>;
+  return <form onSubmit={(event) => void onSubmit(event, category.id)} className="grid gap-3 rounded-xl bg-surface-muted p-3 md:grid-cols-[1fr_10rem_8rem_auto_auto]"><TextField name="name" label="Название" defaultValue={category.name} required /><FulfillmentField defaultValue={category.fulfillmentType} /><NumberField name="sortOrder" label="Порядок" defaultValue={String(category.sortOrder)} /><label className="flex items-end gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked={category.isActive} /> Активна</label><button disabled={isSaving} className="self-end rounded-xl border border-border px-4 py-3 font-semibold disabled:opacity-50">Сохранить</button></form>;
+}
+
+function FulfillmentField({ defaultValue = "kitchen" }: { defaultValue?: "kitchen" | "counter" | "beverage" }) {
+  return <label className="grid gap-1 text-sm font-medium">Готовится<select name="fulfillmentType" defaultValue={defaultValue} className="rounded-lg border border-border bg-white px-3 py-2.5"><option value="kitchen">На кухне</option><option value="counter">Витрина</option><option value="beverage">Напитки</option></select></label>;
 }
 
 function MenuItemForm({ item, categories, isSaving, onSubmit }: { item: AdminMenuItem; categories: AdminCategory[]; isSaving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>, id: string) => Promise<void> }) {

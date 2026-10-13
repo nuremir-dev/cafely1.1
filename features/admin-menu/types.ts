@@ -1,8 +1,11 @@
+import type { FulfillmentType } from "@/features/menu/types";
+
 export type AdminCategory = {
   id: string;
   name: string;
   sortOrder: number;
   isActive: boolean;
+  fulfillmentType: FulfillmentType;
 };
 
 export type AdminMenuItem = {

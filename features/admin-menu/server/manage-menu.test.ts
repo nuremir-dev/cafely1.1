@@ -16,7 +16,7 @@ import {
 type Result = { data: unknown; error: unknown };
 const categoryId = "99db4df3-3346-4b12-b4e4-b5b70d455f5e";
 const itemId = "faaac3a7-7e78-4e18-b870-bf5e5a001d45";
-const categoryInput = { name: "Напитки", sortOrder: 2, isActive: true };
+const categoryInput = { name: "Напитки", sortOrder: 2, isActive: true, fulfillmentType: "beverage" as const };
 const itemInput = { name: "Чай", categoryId, priceTyiyn: 4_000, sortOrder: 3, isActive: true };
 
 function listQuery(result: Result) {
@@ -50,7 +50,7 @@ describe("menu administration service", () => {
 
   it("loads every category and item, including logically disabled records", async () => {
     const categoryQuery = listQuery({
-      data: [{ id: categoryId, name: "Напитки", sort_order: 2, is_active: false }],
+      data: [{ id: categoryId, name: "Напитки", sort_order: 2, is_active: false, fulfillment_type: "beverage" }],
       error: null,
     });
     const itemQuery = listQuery({
@@ -62,33 +62,33 @@ describe("menu administration service", () => {
     });
 
     await expect(getAdminMenuData()).resolves.toEqual({
-      categories: [{ id: categoryId, name: "Напитки", sortOrder: 2, isActive: false }],
+      categories: [{ id: categoryId, name: "Напитки", sortOrder: 2, isActive: false, fulfillmentType: "beverage" }],
       items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false }],
     });
   });
 
   it("creates a category after validating its fields", async () => {
     const query = mutationQuery({
-      data: { id: categoryId, name: "Напитки", sort_order: 2, is_active: true },
+      data: { id: categoryId, name: "Напитки", sort_order: 2, is_active: true, fulfillment_type: "beverage" },
       error: null,
     });
     mocks.createSupabaseAdminClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) });
 
     await expect(createCategory(categoryInput)).resolves.toEqual({
-      id: categoryId, name: "Напитки", sortOrder: 2, isActive: true,
+      id: categoryId, name: "Напитки", sortOrder: 2, isActive: true, fulfillmentType: "beverage",
     });
-    expect(query.insert).toHaveBeenCalledWith({ name: "Напитки", sort_order: 2, is_active: true });
+    expect(query.insert).toHaveBeenCalledWith({ name: "Напитки", sort_order: 2, is_active: true, fulfillment_type: "beverage" });
   });
 
   it("updates a category instead of physically deleting it", async () => {
     const query = mutationQuery({
-      data: { id: categoryId, name: "Напитки", sort_order: 2, is_active: false },
+      data: { id: categoryId, name: "Напитки", sort_order: 2, is_active: false, fulfillment_type: "beverage" },
       error: null,
     });
     mocks.createSupabaseAdminClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) });
 
     await expect(updateCategory(categoryId, { ...categoryInput, isActive: false })).resolves.toMatchObject({ isActive: false });
-    expect(query.update).toHaveBeenCalledWith({ name: "Напитки", sort_order: 2, is_active: false });
+    expect(query.update).toHaveBeenCalledWith({ name: "Напитки", sort_order: 2, is_active: false, fulfillment_type: "beverage" });
     expect(query.eq).toHaveBeenCalledWith("id", categoryId);
   });
 

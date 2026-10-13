@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import type { AdminCategory, AdminMenuData, AdminMenuItem } from "@/features/admin-menu/types";
+import type { FulfillmentType } from "@/features/menu/types";
 import { ApiError } from "@/lib/http/api-error";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -10,6 +11,7 @@ const categorySchema = z.object({
   name: z.string().trim().min(1).max(100),
   sortOrder: z.int().min(0).max(1_000_000),
   isActive: z.boolean(),
+  fulfillmentType: z.enum(["kitchen", "counter", "beverage"]),
 });
 
 const menuItemSchema = z.object({
@@ -25,6 +27,7 @@ type CategoryRow = {
   name: string;
   sort_order: number;
   is_active: boolean;
+  fulfillment_type: FulfillmentType;
 };
 
 type MenuItemRow = {
@@ -39,7 +42,7 @@ type MenuItemRow = {
 export async function getAdminMenuData(): Promise<AdminMenuData> {
   const supabase = createSupabaseAdminClient();
   const [categoriesResult, itemsResult] = await Promise.all([
-    supabase.from("categories").select("id, name, sort_order, is_active").order("sort_order").order("name"),
+    supabase.from("categories").select("id, name, sort_order, is_active, fulfillment_type").order("sort_order").order("name"),
     supabase
       .from("menu_items")
       .select("id, category_id, name, price_tyiyn, sort_order, is_active")
@@ -60,8 +63,8 @@ export async function createCategory(input: unknown): Promise<AdminCategory> {
   const value = parseCategory(input);
   const { data, error } = await createSupabaseAdminClient()
     .from("categories")
-    .insert({ name: value.name, sort_order: value.sortOrder, is_active: value.isActive })
-    .select("id, name, sort_order, is_active")
+    .insert({ name: value.name, sort_order: value.sortOrder, is_active: value.isActive, fulfillment_type: value.fulfillmentType })
+    .select("id, name, sort_order, is_active, fulfillment_type")
     .single();
 
   if (error) throw toDatabaseError(error, "Не удалось создать категорию.");
@@ -73,9 +76,9 @@ export async function updateCategory(id: string, input: unknown): Promise<AdminC
   const value = parseCategory(input);
   const { data, error } = await createSupabaseAdminClient()
     .from("categories")
-    .update({ name: value.name, sort_order: value.sortOrder, is_active: value.isActive })
+    .update({ name: value.name, sort_order: value.sortOrder, is_active: value.isActive, fulfillment_type: value.fulfillmentType })
     .eq("id", id)
-    .select("id, name, sort_order, is_active")
+    .select("id, name, sort_order, is_active, fulfillment_type")
     .single();
 
   if (error) throw toDatabaseError(error, "Не удалось обновить категорию.");
@@ -147,7 +150,7 @@ function toDatabaseError(error: { code?: string }, fallbackMessage: string): Api
 }
 
 function toCategory(row: CategoryRow): AdminCategory {
-  return { id: row.id, name: row.name, sortOrder: row.sort_order, isActive: row.is_active };
+  return { id: row.id, name: row.name, sortOrder: row.sort_order, isActive: row.is_active, fulfillmentType: row.fulfillment_type };
 }
 
 function toMenuItem(row: MenuItemRow): AdminMenuItem {
