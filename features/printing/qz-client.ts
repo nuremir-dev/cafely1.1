@@ -20,7 +20,7 @@ export async function printOrder(order: CreatedOrder, onResult: (job: PrintJob, 
       if (!printer) throw new Error("Принтер не выбран.");
       const api = await qz();
       if (!api.websocket.isActive()) await api.websocket.connect();
-      const config = api.configs.create(printer, { units: "mm", size: { width: 80, height: 300 } });
+      const config = api.configs.create(printer, { units: "mm", size: { width: 80 } });
       await api.print(config, [{ type: "html", format: "plain", data: job.type === "customer" ? customerReceipt(order) : kitchenReceipt(order) }]);
       await onResult(job, "submitted");
     } catch (error) { await onResult(job, "failed", error instanceof Error ? error.message : "Ошибка печати"); }
