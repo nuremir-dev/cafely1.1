@@ -170,6 +170,25 @@ export function PosScreen() {
       void printOrder(payload.data, async (job, status, lastError) => { await reportPrint(job.id, status, lastError); setNotice(status === "failed" ? `${item.itemName}: ошибка печати кухни.` : `${item.itemName}: кухонный чек передан на печать.`); }, "kitchen");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось отправить блюдо на кухню."); } finally { setIsTransitioning(false); }
   }
+  async function sendAllToKitchen() {
+    if (!active || !hasPending || isTransitioning) return;
+    const orderId = active.id; setIsTransitioning(true); setNotice(null);
+    try {
+      await itemQueue.current;
+      const response = await fetch(`/api/active-orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "send-to-kitchen", idempotencyKey: crypto.randomUUID() }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isPrintableResponse(payload)) throw new Error(message(payload, "Не удалось отправить блюда на кухню."));
+      await loadOrders(orderId); setNotice("Все новые блюда переданы на кухню одним чеком."); setError(null);
+      void printOrder(payload.data, async (job, status, lastError) => {
+        await reportPrint(job.id, status, lastError);
+        setNotice(status === "failed" ? "Не удалось напечатать общий кухонный чек." : "Общий кухонный чек передан на печать.");
+      }, "kitchen");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось отправить блюда на кухню."); } finally { setIsTransitioning(false); }
+  }
   async function completeOrder() {
     if (!active || hasPending || active.items.length === 0 || isTransitioning) return;
     activeOrderRevision.current += 1;
@@ -261,6 +280,7 @@ export function PosScreen() {
                 <div><span className="block text-slate-500">Новых позиций</span><strong className="text-lg">{pendingCount}</strong></div>
                 <div><span className="block text-slate-500">Сумма заказа</span><strong className="text-lg">{formatSom(active.totalTyiyn)}</strong></div>
               </div>
+              {hasPending && <button type="button" onClick={() => void sendAllToKitchen()} disabled={isTransitioning} className="mt-4 w-full rounded-2xl border border-primary bg-teal-50 px-4 py-3 text-sm font-bold text-primary-strong hover:bg-teal-100 disabled:opacity-40">Отправить всё на кухню одним чеком</button>}
               {active.items.length === 0 ? <button type="button" onClick={() => void deleteEmptyOrder()} disabled={isTransitioning} className="mt-4 w-full rounded-2xl bg-red-500 px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(239,68,68,0.2)] hover:bg-red-600 disabled:opacity-40">Удалить заказ</button> : <button type="button" onClick={() => void completeOrder()} disabled={hasPending || isTransitioning} className="mt-4 w-full rounded-2xl bg-primary px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(17,170,160,0.2)] disabled:opacity-40">Завершить заказ</button>}
               {hasPending && <p className="mt-3 text-center text-xs text-amber-700">Отправьте каждое новое блюдо на кухню перед завершением.</p>}
             </>}
