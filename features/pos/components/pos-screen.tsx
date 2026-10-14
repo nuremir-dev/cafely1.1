@@ -6,7 +6,6 @@ import { formatSom } from "@/features/cart/cart";
 import type { MenuCatalog } from "@/features/menu/types";
 import type { CreatedOrder } from "@/features/orders/types";
 import type { ActiveOrder, ActiveOrderSummary } from "@/features/orders/server/active-orders";
-import { printOrder } from "@/features/printing/qz-client";
 import { TableGrid } from "@/features/tables/components/table-grid";
 
 type MenuResponse = { data: MenuCatalog };
@@ -66,6 +65,10 @@ export function PosScreen() {
     const timer = window.setTimeout(() => void Promise.all([loadMenu(), loadOrders(), loadTableMap()]).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Не удалось загрузить POS.")), 0);
     return () => window.clearTimeout(timer);
   }, [loadMenu, loadOrders, loadTableMap]);
+  useEffect(() => {
+    const timer = window.setInterval(() => void loadOrders(active?.id).catch(() => undefined), 5_000);
+    return () => window.clearInterval(timer);
+  }, [active?.id, loadOrders]);
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(null), 3_500);
@@ -171,8 +174,7 @@ export function PosScreen() {
       const response = await fetch(`/api/active-orders/${orderId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "send-item-to-kitchen", orderItemId: item.id, idempotencyKey: crypto.randomUUID() }) });
       const payload: unknown = await response.json();
       if (!response.ok || !isPrintableResponse(payload)) throw new Error(message(payload, "Не удалось отправить блюдо на кухню."));
-      await loadOrders(orderId); setNotice(`${item.itemName} передано на кухню.`); setError(null);
-      void printOrder(payload.data, async (job, status, lastError) => { await reportPrint(job.id, status, lastError); setNotice(status === "failed" ? `${item.itemName}: ошибка печати кухни.` : `${item.itemName}: кухонный чек передан на печать.`); }, "kitchen");
+      await loadOrders(orderId); setNotice(`${item.itemName} передано на кухню. Чек ожидает печатную станцию.`); setError(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось отправить блюдо на кухню."); } finally { setIsTransitioning(false); }
   }
   async function sendAllToKitchen() {
@@ -187,11 +189,7 @@ export function PosScreen() {
       });
       const payload: unknown = await response.json();
       if (!response.ok || !isPrintableResponse(payload)) throw new Error(message(payload, "Не удалось отправить блюда на кухню."));
-      await loadOrders(orderId); setNotice("Все новые блюда переданы на кухню одним чеком."); setError(null);
-      void printOrder(payload.data, async (job, status, lastError) => {
-        await reportPrint(job.id, status, lastError);
-        setNotice(status === "failed" ? "Не удалось напечатать общий кухонный чек." : "Общий кухонный чек передан на печать.");
-      }, "kitchen");
+      await loadOrders(orderId); setNotice("Все новые блюда переданы на кухню. Чек ожидает печатную станцию."); setError(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось отправить блюда на кухню."); } finally { setIsTransitioning(false); }
   }
   async function completeOrder() {
@@ -203,8 +201,7 @@ export function PosScreen() {
       const response = await fetch(`/api/active-orders/${orderId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "complete" }) });
       const payload: unknown = await response.json();
       if (!response.ok || !isPrintableResponse(payload)) throw new Error(message(payload, "Не удалось завершить заказ."));
-      await loadOrders(null); setNotice("Заказ завершён."); setError(null);
-      void printOrder(payload.data, async (job, status, lastError) => { await reportPrint(job.id, status, lastError); setNotice(status === "failed" ? "Заказ завершён, но клиентский чек не напечатан." : "Заказ завершён, клиентский чек передан на печать."); }, "customer");
+      await loadOrders(null); setNotice("Заказ завершён. Клиентский чек ожидает печатную станцию."); setError(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось завершить заказ."); } finally { setIsTransitioning(false); }
   }
   async function deleteEmptyOrder() {
@@ -380,7 +377,6 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
 function fulfillmentLabel(type: ActiveOrder["items"][number]["fulfillmentType"]) { return type === "counter" ? "Витрина" : "Напиток"; }
 function toActiveOrderSummary(order: ActiveOrder): ActiveOrderSummary { return { id: order.id, orderNumber: order.orderNumber, tableNumber: order.tableNumber, totalTyiyn: order.totalTyiyn, cashierName: order.cashierName, createdAt: order.createdAt }; }
 function formatOrderTime(value: string) { return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Bishkek" }).format(new Date(value)); }
-async function reportPrint(id: string, status: "submitted" | "failed", lastError?: string) { await fetch(`/api/print-jobs/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, lastError: lastError ?? null }) }); }
 function isMenuResponse(value: unknown): value is MenuResponse { return Boolean(value && typeof value === "object" && "data" in value); }
 function isActiveOrdersResponse(value: unknown): value is ActiveOrdersResponse { return Boolean(value && typeof value === "object" && "data" in value && Array.isArray(value.data)); }
 function isActiveOrderResponse(value: unknown): value is ActiveOrderResponse { return Boolean(value && typeof value === "object" && "data" in value && value.data && typeof value.data === "object" && "tableNumber" in value.data); }

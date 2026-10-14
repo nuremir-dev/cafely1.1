@@ -9,7 +9,7 @@ export type OrderItemSnapshot = {
 export type PrintJob = {
   id: string;
   type: "customer" | "kitchen";
-  status: "pending" | "submitted" | "failed";
+  status: "pending" | "processing" | "submitted" | "failed";
   attempts: number;
   lastError: string | null;
 };

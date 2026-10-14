@@ -115,8 +115,8 @@ function formatDateTime(value: string): string {
   return new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Bishkek", dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 }
 
-function printStatus(status: "pending" | "submitted" | "failed"): string {
-  return { pending: "ожидает отправки", submitted: "передан на печать", failed: "ошибка печати" }[status];
+function printStatus(status: "pending" | "processing" | "submitted" | "failed"): string {
+  return { pending: "ожидает печатную станцию", processing: "печатается", submitted: "передан на печать", failed: "ошибка печати" }[status];
 }
 
 function isHistoryResponse(payload: unknown): payload is HistoryResponse {

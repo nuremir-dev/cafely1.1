@@ -7,6 +7,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { LogoutButton } from "@/features/auth/components/logout-button";
 import type { Session } from "@/features/auth/types";
 import { getPrinterSettings, getQzPrinters } from "@/features/printing/qz-client";
+import { PrintStation } from "@/features/printing/components/print-station";
 
 type NavigationItem = { href: string; label: string; icon: "sale" | "history" | "reports" | "menu" | "tables" };
 
@@ -46,6 +47,7 @@ export function AppShell({ children, session }: { children: ReactNode; session: 
 
   return (
     <div className="min-h-screen bg-[#edf2f0] text-slate-900">
+      <PrintStation />
       <div className="fixed inset-0 -z-10 bg-[url('/images/cafe-login-background.png')] bg-cover bg-center opacity-[0.14]" />
       <div className="mx-auto min-h-screen max-w-[1600px] px-3 py-3 sm:px-5 sm:py-5">
         {pathname !== "/pos" && <header className="flex min-h-[5.25rem] items-center gap-3 rounded-[1.7rem] border border-white/80 bg-white/90 px-4 shadow-[0_10px_34px_rgba(56,72,65,0.1)] backdrop-blur-xl sm:px-7">

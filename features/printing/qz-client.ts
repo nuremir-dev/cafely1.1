@@ -5,6 +5,8 @@ import * as lna from "qz-lna";
 import { customerReceipt, kitchenReceipt } from "./templates";
 
 const SETTINGS_KEY = "cafeline:printers:v1";
+const PRINT_STATION_KEY = "cafeline:print-station:v1";
+const PRINT_STATION_EVENT = "cafeline:print-station-changed";
 
 export type PrinterSettings = {
   customerPrinter: string;
@@ -21,6 +23,16 @@ export const getPrinterSettings = (): PrinterSettings => {
 
 export const savePrinterSettings = (settings: PrinterSettings) =>
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+
+export function isPrintStationEnabled() { return localStorage.getItem(PRINT_STATION_KEY) === "enabled"; }
+export function setPrintStationEnabled(enabled: boolean) { localStorage.setItem(PRINT_STATION_KEY, enabled ? "enabled" : "disabled"); window.dispatchEvent(new Event(PRINT_STATION_EVENT)); }
+export function getPrintStationId() {
+  const key = "cafeline:print-station-id:v1";
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const id = crypto.randomUUID(); localStorage.setItem(key, id); return id;
+}
+export const printStationEvent = PRINT_STATION_EVENT;
 
 let securityConfigured = false;
 
