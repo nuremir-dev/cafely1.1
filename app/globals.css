@@ -30,3 +30,8 @@ body {
 }
 
 button, input { font: inherit; }
+
+@keyframes cafeline-toast {
+  from { opacity: 0; transform: translateY(-0.5rem) translateX(0.5rem); }
+  to { opacity: 1; transform: translateY(0) translateX(0); }
+}

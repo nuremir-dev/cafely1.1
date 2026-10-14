@@ -11,10 +11,11 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 const orderIdSchema = z.uuid();
 const tableNumberSchema = z.int().min(1).max(12);
 const menuItemIdSchema = z.uuid();
+const menuItemVariantIdSchema = z.uuid().nullable();
 const orderItemIdSchema = z.uuid();
 const idempotencyKeySchema = z.uuid();
 
-export type ActiveOrderItem = OrderItemSnapshot & { id: string; sentQuantity: number; addedAt: string; fulfillmentType: FulfillmentType };
+export type ActiveOrderItem = OrderItemSnapshot & { id: string; menuItemVariantId: string | null; sentQuantity: number; addedAt: string; fulfillmentType: FulfillmentType };
 export type ActiveOrder = {
   id: string;
   orderNumber: number;
@@ -27,7 +28,7 @@ export type ActiveOrder = {
 export type ActiveOrderSummary = Pick<ActiveOrder, "id" | "orderNumber" | "tableNumber" | "totalTyiyn" | "cashierName" | "createdAt">;
 
 type OrderRow = { id: string; order_number: number; table_number: number | null; total_tyiyn: number; cashier_name: string; created_at: string };
-type ItemRow = { id: string; menu_item_id: string; item_name: string; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: FulfillmentType };
+type ItemRow = { id: string; menu_item_id: string; menu_item_variant_id: string | null; item_name: string; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: FulfillmentType };
 type PrintJobRow = { id: string; type: "customer" | "kitchen"; status: "pending" | "submitted" | "failed"; attempts: number; last_error: string | null };
 
 export async function listActiveOrders(): Promise<ActiveOrderSummary[]> {
@@ -45,7 +46,7 @@ export async function getActiveOrder(id: string): Promise<ActiveOrder> {
   const supabase = createSupabaseAdminClient();
   const [orderResult, itemsResult] = await Promise.all([
     supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).eq("status", "open").maybeSingle(),
-    supabase.from("order_items").select("id, menu_item_id, item_name, unit_price_tyiyn, quantity, sent_quantity, line_total_tyiyn, added_at, fulfillment_type").eq("order_id", id).order("added_at", { ascending: false }),
+    supabase.from("order_items").select("id, menu_item_id, menu_item_variant_id, item_name, unit_price_tyiyn, quantity, sent_quantity, line_total_tyiyn, added_at, fulfillment_type").eq("order_id", id).order("added_at", { ascending: false }),
   ]);
   if (orderResult.error || itemsResult.error) throw orderResult.error ?? itemsResult.error;
   const order = orderResult.data as OrderRow | null;
@@ -78,9 +79,9 @@ export async function moveActiveOrder(id: string, input: unknown): Promise<Activ
 
 export async function changeActiveOrderItem(id: string, input: unknown): Promise<ActiveOrder> {
   if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
-  const parsed = z.object({ menuItemId: menuItemIdSchema, delta: z.int().min(-1000).max(1000).refine((value) => value !== 0) }).safeParse(input);
+  const parsed = z.object({ menuItemId: menuItemIdSchema, menuItemVariantId: menuItemVariantIdSchema.default(null), delta: z.int().min(-1000).max(1000).refine((value) => value !== 0) }).safeParse(input);
   if (!parsed.success) throw invalidRequest();
-  const { error } = await createSupabaseAdminClient().rpc("change_cafeline_open_order_item", { p_order_id: id, p_menu_item_id: parsed.data.menuItemId, p_delta: parsed.data.delta });
+  const { error } = await createSupabaseAdminClient().rpc("change_cafeline_open_order_item", { p_order_id: id, p_menu_item_id: parsed.data.menuItemId, p_menu_item_variant_id: parsed.data.menuItemVariantId, p_delta: parsed.data.delta });
   if (error) throw mapRpcError(error, "Не удалось изменить блюдо в заказе.");
   return getActiveOrder(id);
 }
@@ -140,10 +141,10 @@ export async function sendActiveOrderToKitchen(id: string, input: unknown): Prom
 
 export async function sendActiveOrderItemToKitchen(id: string, input: unknown): Promise<CreatedOrder> {
   if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
-  const parsed = z.object({ menuItemId: menuItemIdSchema, idempotencyKey: idempotencyKeySchema }).safeParse(input);
+  const parsed = z.object({ orderItemId: orderItemIdSchema, idempotencyKey: idempotencyKeySchema }).safeParse(input);
   if (!parsed.success) throw invalidRequest();
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("send_cafeline_order_item_to_kitchen", { p_order_id: id, p_menu_item_id: parsed.data.menuItemId, p_idempotency_key: parsed.data.idempotencyKey });
+  const { data, error } = await supabase.rpc("send_cafeline_order_item_to_kitchen", { p_order_id: id, p_order_item_id: parsed.data.orderItemId, p_idempotency_key: parsed.data.idempotencyKey });
   if (error) throw mapRpcError(error, "Не удалось отправить блюдо на кухню.");
   const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал кухонную заявку.");
@@ -176,7 +177,7 @@ function toSummary(row: OrderRow): ActiveOrderSummary {
   return { id: row.id, orderNumber: row.order_number, tableNumber: row.table_number, totalTyiyn: row.total_tyiyn, cashierName: row.cashier_name, createdAt: row.created_at };
 }
 function toActiveItem(row: ItemRow): ActiveOrderItem {
-  return { id: row.id, menuItemId: row.menu_item_id, itemName: row.item_name, unitPriceTyiyn: row.unit_price_tyiyn, quantity: row.quantity, sentQuantity: row.sent_quantity, lineTotalTyiyn: row.line_total_tyiyn, addedAt: row.added_at, fulfillmentType: row.fulfillment_type };
+  return { id: row.id, menuItemId: row.menu_item_id, menuItemVariantId: row.menu_item_variant_id, itemName: row.item_name, unitPriceTyiyn: row.unit_price_tyiyn, quantity: row.quantity, sentQuantity: row.sent_quantity, lineTotalTyiyn: row.line_total_tyiyn, addedAt: row.added_at, fulfillmentType: row.fulfillment_type };
 }
 function toPrintable(order: OrderRow, items: ItemRow[], jobs: PrintJobRow[]): CreatedOrder {
   return { id: order.id, orderNumber: order.order_number, tableNumber: order.table_number, totalTyiyn: order.total_tyiyn, cashierName: order.cashier_name, createdAt: order.created_at, items: items.map((item) => ({ menuItemId: item.menu_item_id, itemName: item.item_name, unitPriceTyiyn: item.unit_price_tyiyn, quantity: item.quantity, lineTotalTyiyn: item.line_total_tyiyn })), printJobs: jobs.map((job) => ({ id: job.id, type: job.type, status: job.status, attempts: job.attempts, lastError: job.last_error })), created: true };

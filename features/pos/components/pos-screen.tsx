@@ -15,6 +15,7 @@ type ActiveOrderResponse = { data: ActiveOrder };
 type PrintableResponse = { data: CreatedOrder };
 type TableMapResponse = { data: { cells: number[]; rows: number; columns: number } };
 type MenuItem = MenuCatalog["categories"][number]["items"][number];
+type SelectedMenuItem = MenuItem & { selectedVariantId: string | null; displayName: string };
 
 export function PosScreen() {
   const [catalog, setCatalog] = useState<MenuCatalog | null>(null);
@@ -27,6 +28,7 @@ export function PosScreen() {
   const [isCreating, setIsCreating] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [showTables, setShowTables] = useState(false);
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
   const [tableMap, setTableMap] = useState({ cells: Array.from({ length: 12 }, (_, index) => index), rows: 6, columns: 8 });
   const itemQueue = useRef(Promise.resolve());
   const itemVersion = useRef(0);
@@ -108,12 +110,15 @@ export function PosScreen() {
       await loadOrders(payload.data.id); setNotice(`Заказ назначен на стол ${tableNumber}.`); setError(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось назначить стол."); } finally { setIsTransitioning(false); }
   }
-  function addItem(item: MenuItem) { if (!active) return; queueItemChange(active.id, item, 1); }
-  function subtractItem(item: ActiveOrder["items"][number]) { if (!active) return; queueItemChange(active.id, { id: item.menuItemId, name: item.itemName, priceTyiyn: item.unitPriceTyiyn } as MenuItem, -1); }
+  function addItem(item: MenuItem, variant?: MenuItem["variants"][number]) {
+    if (!active) return;
+    queueItemChange(active.id, selectMenuItem(item, variant), 1);
+  }
+  function subtractItem(item: ActiveOrder["items"][number]) { if (!active) return; queueItemChange(active.id, selectOrderItem(item), -1); }
   async function removeItem(item: ActiveOrder["items"][number]) {
     if (!active || isTransitioning) return;
     if (item.sentQuantity === 0) {
-      queueItemChange(active.id, { id: item.menuItemId, name: item.itemName, priceTyiyn: item.unitPriceTyiyn } as MenuItem, -item.quantity);
+      queueItemChange(active.id, selectOrderItem(item), -item.quantity);
       return;
     }
     const confirmed = window.confirm(`Блюдо «${item.itemName}» уже отправлено на кухню. Удалить его из заказа? Чек об отмене на кухню не будет напечатан.`);
@@ -132,23 +137,23 @@ export function PosScreen() {
       await loadOrders(orderId); setNotice(`${item.itemName} удалено из заказа.`); setError(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось удалить блюдо из заказа."); } finally { setIsTransitioning(false); }
   }
-  function queueItemChange(orderId: string, item: MenuItem, delta: number) {
+  function queueItemChange(orderId: string, item: SelectedMenuItem, delta: number) {
     const version = ++itemVersion.current;
     applyOptimisticItemChange(orderId, item, delta);
     itemQueue.current = itemQueue.current.catch(() => undefined).then(async () => {
-      const response = await fetch(`/api/active-orders/${orderId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "change-item", menuItemId: item.id, delta }) });
+      const response = await fetch(`/api/active-orders/${orderId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "change-item", menuItemId: item.id, menuItemVariantId: item.selectedVariantId, delta }) });
       const payload: unknown = await response.json();
       if (!response.ok || !isActiveOrderResponse(payload)) throw new Error(message(payload, "Не удалось сохранить блюдо."));
       if (version === itemVersion.current) setActive((current) => current?.id === orderId ? payload.data : current);
       setOrders((current) => current.map((order) => order.id === orderId ? { ...order, totalTyiyn: payload.data.totalTyiyn } : order));
     }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : "Не удалось сохранить блюдо."); void loadOrders(orderId); });
   }
-  function applyOptimisticItemChange(orderId: string, item: MenuItem, delta: number) {
+  function applyOptimisticItemChange(orderId: string, item: SelectedMenuItem, delta: number) {
     setActive((current) => {
       if (!current || current.id !== orderId) return current;
-      const pendingIndex = current.items.findIndex((line) => line.menuItemId === item.id && line.sentQuantity === 0);
+      const pendingIndex = current.items.findIndex((line) => line.menuItemId === item.id && line.menuItemVariantId === item.selectedVariantId && line.sentQuantity === 0);
       let items = current.items;
-      if (pendingIndex === -1 && delta > 0) items = [{ id: `optimistic-${crypto.randomUUID()}`, menuItemId: item.id, itemName: item.name, unitPriceTyiyn: item.priceTyiyn, quantity: delta, sentQuantity: 0, lineTotalTyiyn: item.priceTyiyn * delta, addedAt: new Date().toISOString(), fulfillmentType: item.fulfillmentType }, ...items];
+      if (pendingIndex === -1 && delta > 0) items = [{ id: `optimistic-${crypto.randomUUID()}`, menuItemId: item.id, menuItemVariantId: item.selectedVariantId, itemName: item.displayName, unitPriceTyiyn: item.priceTyiyn, quantity: delta, sentQuantity: 0, lineTotalTyiyn: item.priceTyiyn * delta, addedAt: new Date().toISOString(), fulfillmentType: item.fulfillmentType }, ...items];
       else if (pendingIndex >= 0) {
         const line = items[pendingIndex]; const quantity = line.quantity + delta;
         if (quantity <= 0) items = items.filter((_, index) => index !== pendingIndex);
@@ -163,7 +168,7 @@ export function PosScreen() {
     const orderId = active.id; setIsTransitioning(true); setNotice(null);
     try {
       await itemQueue.current;
-      const response = await fetch(`/api/active-orders/${orderId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "send-item-to-kitchen", menuItemId: item.menuItemId, idempotencyKey: crypto.randomUUID() }) });
+      const response = await fetch(`/api/active-orders/${orderId}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "send-item-to-kitchen", orderItemId: item.id, idempotencyKey: crypto.randomUUID() }) });
       const payload: unknown = await response.json();
       if (!response.ok || !isPrintableResponse(payload)) throw new Error(message(payload, "Не удалось отправить блюдо на кухню."));
       await loadOrders(orderId); setNotice(`${item.itemName} передано на кухню.`); setError(null);
@@ -256,10 +261,17 @@ export function PosScreen() {
             {catalog.categories.map((category) => <CategoryButton key={category.id} active={categoryId === category.id} onClick={() => setCategoryId(category.id)}>{category.name}</CategoryButton>)}
           </div>}
           {!catalog ? <p className="rounded-xl bg-surface-muted p-5 text-slate-600">Загрузка меню…</p> : <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-            {menuItems.map((item) => <button type="button" key={item.id} onClick={() => addItem(item)} disabled={!active} className="min-h-22 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:-translate-y-px hover:border-primary hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40">
-              <span className="block font-semibold text-slate-900">{item.name}</span>
-              <span className="mt-2 block text-base font-bold text-primary-strong">{formatSom(item.priceTyiyn)}</span>
-            </button>)}
+            {menuItems.map((item) => {
+              const hasVariants = item.variants.length > 0;
+              const expanded = expandedItemId === item.id;
+              return <div key={item.id} className={`min-h-22 rounded-xl border border-slate-200 bg-white p-3 text-left transition ${hasVariants ? "" : "hover:-translate-y-px hover:border-primary hover:bg-teal-50"} ${!active ? "cursor-not-allowed opacity-40" : ""}`}>
+                <button type="button" onClick={() => hasVariants ? setExpandedItemId((current) => current === item.id ? null : item.id) : addItem(item)} disabled={!active} aria-expanded={hasVariants ? expanded : undefined} className="block w-full text-left disabled:cursor-not-allowed">
+                  <span className="block font-semibold text-slate-900">{item.name}</span>
+                  {hasVariants ? <span className="mt-2 block text-sm font-semibold text-primary-strong">Выбрать вариант {expanded ? "⌃" : "⌄"}</span> : <span className="mt-2 block text-base font-bold text-primary-strong">{formatSom(item.priceTyiyn)}</span>}
+                </button>
+                {hasVariants && expanded && <div className="mt-3 grid grid-cols-1 gap-2 border-t border-slate-100 pt-3">{item.variants.map((variant) => <button type="button" key={variant.id} onClick={() => addItem(item, variant)} disabled={!active} className="rounded-lg bg-teal-50 px-2.5 py-2 text-left text-xs font-semibold text-primary-strong transition hover:bg-teal-100 disabled:cursor-not-allowed"><span className="block truncate">{variant.name}</span><span className="mt-0.5 block text-sm font-bold">{formatSom(variant.priceTyiyn)}</span></button>)}</div>}
+              </div>;
+            })}
           </div>}
           {!active && <p className="mt-5 text-sm text-slate-500">Нажмите «Новый заказ», затем сразу добавляйте блюда.</p>}
         </section>
@@ -274,7 +286,7 @@ export function PosScreen() {
             </div>
             {!active ? <p className="py-16 text-center text-sm text-slate-500">Выберите или создайте новый заказ</p> : <>
               <ul className="my-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                {active.items.length === 0 ? <li className="py-10 text-center text-sm text-slate-500">Добавьте блюда из каталога</li> : active.items.map((item) => <OrderCard key={item.id} item={item} disabled={isTransitioning} onDecrease={() => subtractItem(item)} onIncrease={() => addItem({ id: item.menuItemId, name: item.itemName, priceTyiyn: item.unitPriceTyiyn } as MenuItem)} onRemove={() => void removeItem(item)} onSend={() => void sendItemToKitchen(item)} />)}
+                {active.items.length === 0 ? <li className="py-10 text-center text-sm text-slate-500">Добавьте блюда из каталога</li> : active.items.map((item) => <OrderCard key={item.id} item={item} disabled={isTransitioning} onDecrease={() => subtractItem(item)} onIncrease={() => { if (active) queueItemChange(active.id, selectOrderItem(item), 1); }} onRemove={() => void removeItem(item)} onSend={() => void sendItemToKitchen(item)} />)}
               </ul>
               <div className="grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-4 text-sm">
                 <div><span className="block text-slate-500">Новых позиций</span><strong className="text-lg">{pendingCount}</strong></div>
@@ -359,6 +371,12 @@ function Toast({ children, kind, onClose }: { children: string; kind: "success" 
 }
 function orderTitle(order: ActiveOrderSummary) { return order.tableNumber ? `Стол ${order.tableNumber}` : "Новый заказ"; }
 function activeTitle(order: ActiveOrder) { return order.tableNumber ? `Стол ${order.tableNumber}` : "Новый заказ"; }
+function selectMenuItem(item: MenuItem, variant?: MenuItem["variants"][number]): SelectedMenuItem {
+  return { ...item, priceTyiyn: variant?.priceTyiyn ?? item.priceTyiyn, selectedVariantId: variant?.id ?? null, displayName: variant ? `${item.name} · ${variant.name}` : item.name };
+}
+function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
+  return { id: item.menuItemId, categoryId: "", name: item.itemName, priceTyiyn: item.unitPriceTyiyn, fulfillmentType: item.fulfillmentType, variants: [], selectedVariantId: item.menuItemVariantId, displayName: item.itemName };
+}
 function fulfillmentLabel(type: ActiveOrder["items"][number]["fulfillmentType"]) { return type === "counter" ? "Витрина" : "Напиток"; }
 function toActiveOrderSummary(order: ActiveOrder): ActiveOrderSummary { return { id: order.id, orderNumber: order.orderNumber, tableNumber: order.tableNumber, totalTyiyn: order.totalTyiyn, cashierName: order.cashierName, createdAt: order.createdAt }; }
 function formatOrderTime(value: string) { return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Bishkek" }).format(new Date(value)); }

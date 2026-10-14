@@ -4,6 +4,13 @@ export type MenuItem = {
   name: string;
   priceTyiyn: number;
   fulfillmentType: FulfillmentType;
+  variants: MenuItemVariant[];
+};
+
+export type MenuItemVariant = {
+  id: string;
+  name: string;
+  priceTyiyn: number;
 };
 
 export type FulfillmentType = "kitchen" | "counter" | "beverage";

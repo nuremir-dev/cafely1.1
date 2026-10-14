@@ -10,10 +10,11 @@ type MenuItemRow = {
   name: string;
   price_tyiyn: number;
 };
+type VariantRow = { id: string; menu_item_id: string; name: string; price_tyiyn: number };
 
 export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
   const supabase = createSupabaseAdminClient();
-  const [categoriesResult, itemsResult] = await Promise.all([
+  const [categoriesResult, itemsResult, variantsResult] = await Promise.all([
     supabase
       .from("categories")
       .select("id, name, fulfillment_type")
@@ -26,16 +27,30 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
+    createSupabaseAdminClient()
+      .from("menu_item_variants")
+      .select("id, menu_item_id, name, price_tyiyn")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true })
+      .order("name", { ascending: true }),
   ]);
 
   if (categoriesResult.error) throw categoriesResult.error;
   if (itemsResult.error) throw itemsResult.error;
+  if (variantsResult.error) throw variantsResult.error;
 
   const itemsByCategory = new Map<string, MenuItemRow[]>();
   for (const item of (itemsResult.data ?? []) as MenuItemRow[]) {
     const categoryItems = itemsByCategory.get(item.category_id) ?? [];
     categoryItems.push(item);
     itemsByCategory.set(item.category_id, categoryItems);
+  }
+
+  const variantsByItem = new Map<string, VariantRow[]>();
+  for (const variant of (variantsResult.data ?? []) as VariantRow[]) {
+    const itemVariants = variantsByItem.get(variant.menu_item_id) ?? [];
+    itemVariants.push(variant);
+    variantsByItem.set(variant.menu_item_id, itemVariants);
   }
 
   return {
@@ -49,6 +64,7 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
         name: item.name,
         priceTyiyn: item.price_tyiyn,
         fulfillmentType: category.fulfillment_type,
+        variants: (variantsByItem.get(item.id) ?? []).map((variant) => ({ id: variant.id, name: variant.name, priceTyiyn: variant.price_tyiyn })),
       })),
     })),
   };

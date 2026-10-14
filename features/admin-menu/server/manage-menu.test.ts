@@ -17,15 +17,17 @@ type Result = { data: unknown; error: unknown };
 const categoryId = "99db4df3-3346-4b12-b4e4-b5b70d455f5e";
 const itemId = "faaac3a7-7e78-4e18-b870-bf5e5a001d45";
 const categoryInput = { name: "Напитки", sortOrder: 2, isActive: true, fulfillmentType: "beverage" as const };
-const itemInput = { name: "Чай", categoryId, priceTyiyn: 4_000, sortOrder: 3, isActive: true };
+const itemInput = { name: "Чай", categoryId, priceTyiyn: 4_000, sortOrder: 3, isActive: true, variants: [{ name: "Стандарт", priceTyiyn: 4_000, sortOrder: 0, isActive: true }] };
 
 function listQuery(result: Result) {
   const query = {
     select: vi.fn(),
+    eq: vi.fn(),
     order: vi.fn(),
     then: (resolve: (value: Result) => unknown) => Promise.resolve(result).then(resolve),
   };
   query.select.mockReturnValue(query);
+  query.eq.mockReturnValue(query);
   query.order.mockReturnValue(query);
   return query;
 }
@@ -57,13 +59,14 @@ describe("menu administration service", () => {
       data: [{ id: itemId, category_id: categoryId, name: "Чай", price_tyiyn: 4_000, sort_order: 3, is_active: false }],
       error: null,
     });
+    const variantsQuery = listQuery({ data: [], error: null });
     mocks.createSupabaseAdminClient.mockReturnValue({
-      from: vi.fn().mockReturnValueOnce(categoryQuery).mockReturnValueOnce(itemQuery),
+      from: vi.fn().mockReturnValueOnce(categoryQuery).mockReturnValueOnce(itemQuery).mockReturnValueOnce(variantsQuery),
     });
 
     await expect(getAdminMenuData()).resolves.toEqual({
       categories: [{ id: categoryId, name: "Напитки", sortOrder: 2, isActive: false, fulfillmentType: "beverage" }],
-      items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false }],
+      items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false, variants: [] }],
     });
   });
 
@@ -101,9 +104,16 @@ describe("menu administration service", () => {
       data: { id: itemId, category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false },
       error: null,
     });
-    mocks.createSupabaseAdminClient
-      .mockReturnValueOnce({ from: vi.fn().mockReturnValue(createdQuery) })
-      .mockReturnValueOnce({ from: vi.fn().mockReturnValue(updatedQuery) });
+    const variantsQuery = listQuery({ data: [], error: null });
+    const client = {
+      from: vi.fn()
+        .mockReturnValueOnce(createdQuery)
+        .mockReturnValueOnce(updatedQuery)
+        .mockReturnValueOnce(updatedQuery)
+        .mockReturnValueOnce(variantsQuery),
+      rpc: vi.fn().mockResolvedValue({ error: null }),
+    };
+    mocks.createSupabaseAdminClient.mockReturnValue(client);
 
     await expect(createMenuItem(itemInput)).resolves.toMatchObject({ priceTyiyn: 4_000, isActive: true });
     await expect(updateMenuItem(itemId, { ...itemInput, priceTyiyn: 4_500, isActive: false })).resolves.toMatchObject({ priceTyiyn: 4_500, isActive: false });

@@ -27,7 +27,7 @@ describe("getActiveMenuCatalog", () => {
 
   it("groups active item snapshots by active category in database order", async () => {
     const categoriesQuery = queryReturning({
-      data: [{ id: "main", name: "Основные" }, { id: "drinks", name: "Напитки" }],
+      data: [{ id: "main", name: "Основные", fulfillment_type: "kitchen" }, { id: "drinks", name: "Напитки", fulfillment_type: "beverage" }],
       error: null,
     });
     const itemsQuery = queryReturning({
@@ -37,8 +37,12 @@ describe("getActiveMenuCatalog", () => {
       ],
       error: null,
     });
+    const variantsQuery = queryReturning({
+      data: [{ id: "large", menu_item_id: "lagman", name: "Большой", price_tyiyn: 31_000 }],
+      error: null,
+    });
     mocks.createSupabaseAdminClient.mockReturnValue({
-      from: vi.fn().mockReturnValueOnce(categoriesQuery).mockReturnValueOnce(itemsQuery),
+      from: vi.fn().mockReturnValueOnce(categoriesQuery).mockReturnValueOnce(itemsQuery).mockReturnValueOnce(variantsQuery),
     });
 
     await expect(getActiveMenuCatalog()).resolves.toEqual({
@@ -46,9 +50,10 @@ describe("getActiveMenuCatalog", () => {
         {
           id: "main",
           name: "Основные",
-          items: [{ id: "lagman", categoryId: "main", name: "Лагман", priceTyiyn: 25_000 }],
+          fulfillmentType: "kitchen",
+          items: [{ id: "lagman", categoryId: "main", name: "Лагман", priceTyiyn: 25_000, fulfillmentType: "kitchen", variants: [{ id: "large", name: "Большой", priceTyiyn: 31_000 }] }],
         },
-        { id: "drinks", name: "Напитки", items: [] },
+        { id: "drinks", name: "Напитки", fulfillmentType: "beverage", items: [] },
       ],
     });
   });
@@ -56,8 +61,9 @@ describe("getActiveMenuCatalog", () => {
   it("propagates a database error instead of returning a partial catalog", async () => {
     const categoriesQuery = queryReturning({ data: null, error: new Error("categories unavailable") });
     const itemsQuery = queryReturning({ data: [], error: null });
+    const variantsQuery = queryReturning({ data: [], error: null });
     mocks.createSupabaseAdminClient.mockReturnValue({
-      from: vi.fn().mockReturnValueOnce(categoriesQuery).mockReturnValueOnce(itemsQuery),
+      from: vi.fn().mockReturnValueOnce(categoriesQuery).mockReturnValueOnce(itemsQuery).mockReturnValueOnce(variantsQuery),
     });
 
     await expect(getActiveMenuCatalog()).rejects.toThrow("categories unavailable");

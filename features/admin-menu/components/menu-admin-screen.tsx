@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import type { AdminCategory, AdminMenuData, AdminMenuItem } from "@/features/admin-menu/types";
@@ -8,145 +8,77 @@ import { formatSom } from "@/features/cart/cart";
 import { parseSomToTyiyn } from "@/features/money/parse-som";
 import { getPrinterSettings, getQzPrinters, savePrinterSettings } from "@/features/printing/qz-client";
 
+type VariantDraft = { name: string; priceSom: string; sortOrder: number; isActive: boolean };
+type ItemDraft = { name: string; categoryId: string; isActive: boolean; sortOrder: number; variants: VariantDraft[] };
+const inputClass = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-primary";
+
 export function MenuAdminScreen({ initialData }: { initialData: AdminMenuData }) {
   const router = useRouter();
-  const [message, setMessage] = useState<string | null>(null);
+  const [categories, setCategories] = useState(initialData.categories);
+  const [items, setItems] = useState(initialData.items);
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(initialData.items[0]?.id ?? null);
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [toast, setToast] = useState<{ text: string; kind: "success" | "error" } | null>(null);
+  const toastTimer = useRef<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [categoryDialog, setCategoryDialog] = useState<AdminCategory | "new" | null>(null);
+  const [showPrinters, setShowPrinters] = useState(false);
+  const visibleItems = useMemo(() => items.filter((item) => (categoryId === null || item.categoryId === categoryId) && item.name.toLocaleLowerCase("ru-RU").includes(query.trim().toLocaleLowerCase("ru-RU"))), [categoryId, items, query]);
+  const selectedCategory = categories.find((category) => category.id === categoryId);
+  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(visibleItems.length / pageSize));
+  const pagedItems = visibleItems.slice((Math.min(page, pageCount) - 1) * pageSize, Math.min(page, pageCount) * pageSize);
 
-  async function submitCategory(event: FormEvent<HTMLFormElement>, id?: string) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    await submit(`/api/admin/categories${id ? `/${id}` : ""}`, id ? "PATCH" : "POST", {
-      name: String(new FormData(form).get("name") ?? ""),
-      sortOrder: Number(new FormData(form).get("sortOrder")),
-      isActive: new FormData(form).has("isActive"),
-      fulfillmentType: String(new FormData(form).get("fulfillmentType") ?? "kitchen"),
-    });
-    if (!id) form.reset();
+  function notify(text: string, kind: "success" | "error" = "success") {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    setToast({ text, kind });
+    toastTimer.current = window.setTimeout(() => { setToast(null); toastTimer.current = null; }, 2_000);
   }
 
-  async function submitItem(event: FormEvent<HTMLFormElement>, id?: string) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const priceTyiyn = parseSomToTyiyn(String(formData.get("priceSom") ?? ""));
-    if (priceTyiyn === null) {
-      setMessage("Укажите корректную неотрицательную цену: например, 250 или 40,50.");
-      return;
-    }
-
-    await submit(`/api/admin/menu-items${id ? `/${id}` : ""}`, id ? "PATCH" : "POST", {
-      name: String(formData.get("name") ?? ""),
-      categoryId: String(formData.get("categoryId") ?? ""),
-      priceTyiyn,
-      sortOrder: Number(formData.get("sortOrder")),
-      isActive: formData.has("isActive"),
-    });
-    if (!id) form.reset();
+  async function request<T>(url: string, method: "POST" | "PATCH", body: object): Promise<T | null> {
+    if (isSaving) return null;
+    setIsSaving(true); setToast(null);
+    try { const response = await fetch(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); const payload: unknown = await response.json(); if (!response.ok) throw new Error(readErrorMessage(payload)); return (payload as { data: T }).data; }
+    catch (error) { notify(error instanceof Error ? error.message : "Не удалось сохранить изменения.", "error"); return null; }
+    finally { setIsSaving(false); }
   }
-
-  async function submit(url: string, method: "POST" | "PATCH", body: object) {
-    if (isSaving) return;
-    setIsSaving(true);
-    setMessage(null);
-    try {
-      const response = await fetch(url, {
-        method,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok) throw new Error(readErrorMessage(payload));
-      setMessage("Изменения сохранены. Каталог кассы обновится при возврате к нему.");
-      router.refresh();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Не удалось сохранить изменения.");
-    } finally {
-      setIsSaving(false);
-    }
+  async function saveCategory(input: CategoryInput, id?: string) { const saved = await request<AdminCategory>(`/api/admin/categories${id ? `/${id}` : ""}`, id ? "PATCH" : "POST", input); if (!saved) return; setCategories((current) => id ? current.map((category) => category.id === id ? saved : category) : [...current, saved].sort(byOrder)); setCategoryDialog(null); notify(id ? "Категория сохранена." : "Категория создана."); }
+  async function saveItem(draft: ItemDraft, id?: string) {
+    const variants = draft.variants.map((variant) => ({ ...variant, name: variant.name.trim(), priceTyiyn: parseSomToTyiyn(variant.priceSom) }));
+    if (!draft.name.trim() || !draft.categoryId || variants.some((variant) => !variant.name || variant.priceTyiyn === null)) { notify("Заполните название блюда, категорию и цену каждого варианта.", "error"); return; }
+    if (new Set(variants.map((variant) => variant.name.toLocaleLowerCase("ru-RU"))).size !== variants.length) { notify("Названия вариантов не должны повторяться.", "error"); return; }
+    const saved = await request<AdminMenuItem>(`/api/admin/menu-items${id ? `/${id}` : ""}`, id ? "PATCH" : "POST", { name: draft.name.trim(), categoryId: draft.categoryId, isActive: draft.isActive, sortOrder: draft.sortOrder, priceTyiyn: variants[0]?.priceTyiyn ?? 0, variants: variants.map((variant) => ({ name: variant.name, priceTyiyn: variant.priceTyiyn as number, sortOrder: variant.sortOrder, isActive: variant.isActive })) });
+    if (!saved) return; setItems((current) => id ? current.map((item) => item.id === id ? saved : item) : [...current, saved].sort(byOrder)); setSelectedItemId(saved.id); notify(id ? "Изменения сохранены." : "Блюдо добавлено."); router.refresh();
   }
+  async function toggleItem(item: AdminMenuItem) { await saveItem(toDraft(item, !item.isActive), item.id); }
+  async function hideCategory(category: AdminCategory) { await saveCategory({ name: category.name, sortOrder: category.sortOrder, isActive: false, fulfillmentType: category.fulfillmentType }, category.id); }
 
-  return (
-    <div className="space-y-9">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">Управление меню</h1>
-        <p className="mt-1 text-sm text-slate-600">Порядок задаётся числом: меньшее значение показывается раньше.</p>
-      </header>
-      {message && <p role="status" className="rounded-xl bg-surface-muted p-4 text-sm text-slate-700">{message}</p>}
-      <PrinterSettingsPanel />
-
-      <section className="rounded-2xl border border-border bg-surface p-5" aria-labelledby="categories-title">
-        <h2 id="categories-title" className="text-lg font-bold">Категории</h2>
-        <form onSubmit={(event) => void submitCategory(event)} className="mt-4 grid gap-3 md:grid-cols-[1fr_10rem_8rem_auto_auto]">
-          <TextField name="name" label="Новая категория" required />
-          <FulfillmentField />
-          <NumberField name="sortOrder" label="Порядок" defaultValue="0" />
-          <label className="flex items-end gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked /> Активна</label>
-          <button disabled={isSaving} className="self-end rounded-xl bg-primary px-4 py-3 font-semibold text-white disabled:opacity-50">Добавить</button>
-        </form>
-        <div className="mt-5 space-y-3">
-          {initialData.categories.map((category) => (
-            <CategoryForm key={category.id} category={category} isSaving={isSaving} onSubmit={submitCategory} />
-          ))}
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-border bg-surface p-5" aria-labelledby="items-title">
-        <h2 id="items-title" className="text-lg font-bold">Блюда</h2>
-        {initialData.categories.length === 0 ? (
-          <p className="mt-4 text-sm text-slate-600">Сначала создайте хотя бы одну категорию.</p>
-        ) : (
-          <form onSubmit={(event) => void submitItem(event)} className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_12rem_9rem_7rem_auto]">
-            <TextField name="name" label="Новое блюдо" required />
-            <label className="grid gap-1 text-sm font-medium">Категория<select name="categoryId" required className="rounded-lg border border-border bg-white px-3 py-2.5">{initialData.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
-            <TextField name="priceSom" label="Цена, сом" placeholder="250" required inputMode="decimal" />
-            <NumberField name="sortOrder" label="Порядок" defaultValue="0" />
-            <div className="flex items-end gap-3"><label className="flex gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked /> Активно</label><button disabled={isSaving} className="mb-0 rounded-xl bg-primary px-4 py-3 font-semibold text-white disabled:opacity-50">Добавить</button></div>
-          </form>
-        )}
-        <div className="mt-5 space-y-3">
-          {initialData.items.map((item) => (
-            <MenuItemForm key={item.id} item={item} categories={initialData.categories} isSaving={isSaving} onSubmit={submitItem} />
-          ))}
-        </div>
-      </section>
-    </div>
-  );
+  return <div className="space-y-4"><header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm"><div><h1 className="text-2xl font-bold tracking-[-0.035em] text-slate-950">Управление меню</h1><p className="mt-1 text-sm text-slate-500">Категории и блюда кафе</p></div><div className="flex gap-2"><button type="button" onClick={() => setShowPrinters((value) => !value)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-primary-strong hover:bg-teal-50">▣ Настройка принтеров</button><button type="button" onClick={() => router.refresh()} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">↻ Обновить</button></div></header>
+    {toast && <div role={toast.kind === "error" ? "alert" : "status"} className={`fixed right-5 top-5 z-50 flex max-w-sm items-center gap-3 rounded-xl border px-4 py-3 text-sm font-semibold shadow-xl animate-[cafeline-toast_180ms_ease-out] ${toast.kind === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-teal-200 bg-white text-teal-900"}`}><span className={`grid size-6 place-items-center rounded-full text-white ${toast.kind === "error" ? "bg-red-500" : "bg-primary"}`}>{toast.kind === "error" ? "!" : "✓"}</span><span>{toast.text}</span><button type="button" onClick={() => setToast(null)} className="ml-1 text-lg leading-none opacity-60 hover:opacity-100" aria-label="Закрыть уведомление">×</button></div>}{showPrinters && <PrinterSettingsPanel />}
+    <div className="grid gap-4 xl:grid-cols-[15.5rem_minmax(0,1fr)_24rem]"><section className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm"><div className="flex items-center justify-between px-2 pb-3"><h2 className="font-bold">Категории</h2><button type="button" onClick={() => setCategoryDialog("new")} className="rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white">＋ Добавить</button></div><div className="space-y-1"><CategoryRow active={categoryId === null} count={items.length} name="Все блюда" onClick={() => { setCategoryId(null); setPage(1); }} />{categories.map((category) => <CategoryRow key={category.id} active={category.id === categoryId} count={items.filter((item) => item.categoryId === category.id).length} muted={!category.isActive} name={category.name} onClick={() => { setCategoryId(category.id); setPage(1); }} onEdit={() => setCategoryDialog(category)} onHide={() => void hideCategory(category)} />)}</div></section>
+      <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4"><h2 className="font-bold text-slate-950">{selectedCategory ? `Блюда в категории «${selectedCategory.name}»` : "Все блюда"} <span className="text-slate-400">({visibleItems.length})</span></h2><div className="flex gap-2"><label><span className="sr-only">Поиск по блюдам</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="⌕ Поиск по блюдам..." className="w-48 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary" /></label><button type="button" onClick={() => setSelectedItemId(null)} className="rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-white">＋ Новое блюдо</button></div></div><div className="mt-2 divide-y divide-slate-100">{pagedItems.map((item) => <MenuRow key={item.id} item={item} selected={item.id === selectedItemId} onClick={() => setSelectedItemId(item.id)} onToggle={() => void toggleItem(item)} />)}{visibleItems.length === 0 && <p className="py-12 text-center text-sm text-slate-500">Блюда не найдены.</p>}</div>{visibleItems.length > pageSize && <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4 text-sm text-slate-500"><span>Показано {pagedItems.length} из {visibleItems.length}</span><div className="flex gap-2"><button type="button" disabled={page <= 1} onClick={() => setPage((current) => current - 1)} className="rounded-lg border border-slate-200 px-3 py-1.5 disabled:opacity-30">‹</button><span className="grid min-w-8 place-items-center rounded-lg bg-primary px-2 py-1.5 font-semibold text-white">{Math.min(page, pageCount)}</span><button type="button" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)} className="rounded-lg border border-slate-200 px-3 py-1.5 disabled:opacity-30">›</button></div></div>}</section>
+      <aside className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm xl:max-h-[calc(100dvh-8.5rem)] xl:overflow-y-auto"><ItemEditor key={selectedItem?.id ?? "new"} item={selectedItem} categories={categories} isSaving={isSaving} onClose={() => setSelectedItemId(null)} onSave={saveItem} /></aside></div>
+    {categoryDialog && <CategoryDialog category={categoryDialog === "new" ? null : categoryDialog} onClose={() => setCategoryDialog(null)} onSave={saveCategory} isSaving={isSaving} />}</div>;
 }
 
-function PrinterSettingsPanel() {
-  const [printers, setPrinters] = useState<string[]>([]);
-  const [settings, setSettings] = useState({ customerPrinter: "", kitchenPrinter: "" });
-  const [status, setStatus] = useState("QZ Tray ещё не проверен.");
-  async function discover() { try { const found = await getQzPrinters(); const saved = getPrinterSettings(); setPrinters(found); setSettings(saved); setStatus(`QZ Tray подключён: найдено принтеров — ${found.length}.`); } catch (error) { setStatus(error instanceof Error ? `QZ Tray недоступен: ${error.message}` : "QZ Tray недоступен."); } }
-  function update(key: "customerPrinter" | "kitchenPrinter", value: string) { const next = { ...settings, [key]: value }; setSettings(next); savePrinterSettings(next); }
-  return <section className="rounded-2xl border border-border bg-surface p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold">Принтеры</h2><p className="mt-1 text-sm text-slate-600">{status}</p></div><button type="button" onClick={() => void discover()} className="rounded-xl border border-border px-4 py-3 font-semibold">Проверить QZ Tray</button></div>{printers.length > 0 && <div className="mt-4 grid gap-3 md:grid-cols-2"><PrinterSelect label="Клиентский принтер" value={settings.customerPrinter} printers={printers} onChange={(value) => update("customerPrinter", value)} /><PrinterSelect label="Кухонный принтер" value={settings.kitchenPrinter} printers={printers} onChange={(value) => update("kitchenPrinter", value)} /></div>}</section>;
+type CategoryInput = { name: string; sortOrder: number; isActive: boolean; fulfillmentType: AdminCategory["fulfillmentType"] };
+function CategoryRow({ active, count, muted, name, onClick, onEdit, onHide }: { active: boolean; count: number; muted?: boolean; name: string; onClick: () => void; onEdit?: () => void; onHide?: () => void }) { return <div className={`group flex items-center gap-2 rounded-xl p-2 transition ${active ? "bg-teal-50 text-primary-strong" : "hover:bg-slate-50"} ${muted ? "opacity-50" : ""}`}><button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-semibold"><span className="text-slate-400">⠿</span><span className="truncate">{name}</span><span className="ml-auto text-slate-500">{count}</span></button>{onEdit && <div className="flex opacity-0 transition group-hover:opacity-100"><button type="button" onClick={onEdit} className="px-1.5 text-slate-500 hover:text-primary-strong" aria-label={`Изменить ${name}`}>✎</button><button type="button" onClick={onHide} className="px-1.5 text-slate-500 hover:text-red-600" aria-label={`Скрыть ${name}`}>⋯</button></div>}</div>; }
+function MenuRow({ item, onClick, onToggle, selected }: { item: AdminMenuItem; onClick: () => void; onToggle: () => void; selected: boolean }) { const prices = item.variants.map((variant) => variant.priceTyiyn); const low = Math.min(...(prices.length ? prices : [item.priceTyiyn])); const high = Math.max(...(prices.length ? prices : [item.priceTyiyn])); return <div className={`flex cursor-pointer items-center gap-3 rounded-xl px-3 py-3 transition ${selected ? "bg-teal-50" : "hover:bg-slate-50"}`} onClick={onClick}><div className="min-w-0 flex-1"><h3 className="truncate font-semibold text-slate-900">{item.name}</h3><p className="mt-0.5 text-xs text-slate-500">{item.variants.length} {pluralVariants(item.variants.length)}</p></div><p className="hidden w-28 text-right text-sm font-semibold text-slate-700 sm:block">{low === high ? formatSom(low) : `${formatSom(low)}–${formatSom(high)}`}</p><button type="button" onClick={(event) => { event.stopPropagation(); onToggle(); }} className={`relative h-6 w-11 rounded-full transition ${item.isActive ? "bg-primary" : "bg-slate-200"}`} aria-label={item.isActive ? `Отключить ${item.name}` : `Включить ${item.name}`}><span className={`absolute top-1 size-4 rounded-full bg-white shadow transition ${item.isActive ? "right-1" : "left-1"}`} /></button><button type="button" onClick={onClick} className="rounded-lg border border-slate-200 px-2.5 py-2 text-sm font-semibold text-slate-600 hover:bg-white" aria-label={`Редактировать ${item.name}`}>✎</button></div>; }
+
+function ItemEditor({ item, categories, isSaving, onClose, onSave }: { item: AdminMenuItem | null; categories: AdminCategory[]; isSaving: boolean; onClose: () => void; onSave: (draft: ItemDraft, id?: string) => Promise<void> }) {
+  const [draft, setDraft] = useState<ItemDraft>(() => item ? toDraft(item) : { name: "", categoryId: categories[0]?.id ?? "", isActive: true, sortOrder: 0, variants: [{ name: "Стандарт", priceSom: "", sortOrder: 0, isActive: true }] });
+  const changeVariant = (index: number, patch: Partial<VariantDraft>) => setDraft((current) => ({ ...current, variants: current.variants.map((variant, currentIndex) => currentIndex === index ? { ...variant, ...patch } : variant) }));
+  return <form onSubmit={(event: FormEvent) => { event.preventDefault(); void onSave(draft, item?.id); }} className="flex min-h-full flex-col p-4"><div className="flex items-start justify-between border-b border-slate-100 pb-4"><div><h2 className="text-lg font-bold">{item ? "Редактирование блюда" : "Добавить новое блюдо"}</h2><p className="mt-1 text-xs text-slate-500">Варианты задают итоговую цену блюда.</p></div>{item && <button type="button" onClick={onClose} className="rounded-lg px-2 text-xl text-slate-400 hover:bg-slate-100" aria-label="Закрыть форму">×</button>}</div><div className="space-y-4 py-4"><Field label="Название блюда"><input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} required placeholder="Например, Манты" className={inputClass} /></Field><Field label="Категория"><select value={draft.categoryId} onChange={(event) => setDraft((current) => ({ ...current, categoryId: event.target.value }))} className={inputClass}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></Field><label className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-3 text-sm font-semibold">Активное блюдо<button type="button" onClick={() => setDraft((current) => ({ ...current, isActive: !current.isActive }))} className={`relative h-6 w-11 rounded-full ${draft.isActive ? "bg-primary" : "bg-slate-300"}`}><span className={`absolute top-1 size-4 rounded-full bg-white shadow ${draft.isActive ? "right-1" : "left-1"}`} /></button></label><section className="border-t border-slate-100 pt-4"><div className="flex items-center justify-between"><h3 className="font-bold">Варианты ({draft.variants.length})</h3><button type="button" onClick={() => setDraft((current) => ({ ...current, variants: [...current.variants, { name: "", priceSom: "", sortOrder: current.variants.length * 10, isActive: true }] }))} className="rounded-lg border border-primary px-2.5 py-2 text-xs font-semibold text-primary-strong">＋ Добавить вариант</button></div><div className="mt-3 space-y-3">{draft.variants.map((variant, index) => <div key={index} className="rounded-xl border border-slate-200 p-2"><div className="flex items-center gap-2"><span className="text-slate-400">⠿</span><div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_6.5rem] gap-2"><label className="text-[11px] font-medium text-slate-500">Название варианта<input value={variant.name} onChange={(event) => changeVariant(index, { name: event.target.value })} required placeholder="6 шт." className={`${inputClass} mt-1 py-2`} /></label><label className="text-[11px] font-medium text-slate-500">Цена, сом<input value={variant.priceSom} onChange={(event) => changeVariant(index, { priceSom: event.target.value })} required inputMode="decimal" placeholder="220" className={`${inputClass} mt-1 py-2`} /></label></div><button type="button" disabled={draft.variants.length === 1} onClick={() => setDraft((current) => ({ ...current, variants: current.variants.filter((_, currentIndex) => currentIndex !== index) }))} className="rounded-lg p-2 text-red-500 hover:bg-red-50 disabled:opacity-30" aria-label="Удалить вариант">⌫</button></div></div>)}</div><p className="mt-3 rounded-lg bg-sky-50 p-3 text-xs leading-5 text-slate-600">Название варианта произвольное: 25 см, 300 г, 12 шт., «Большой» и т. д.</p></section></div><div className="mt-auto border-t border-slate-100 pt-4"><button disabled={isSaving || categories.length === 0} className="w-full rounded-xl bg-primary px-4 py-3.5 font-bold text-white shadow-sm disabled:opacity-50">{isSaving ? "Сохраняем…" : item ? "✓ Сохранить изменения" : "＋ Добавить блюдо"}</button></div></form>;
 }
 
-function PrinterSelect({ label, onChange, printers, value }: { label: string; onChange: (value: string) => void; printers: string[]; value: string }) { return <label className="grid gap-1 text-sm font-medium">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="rounded-lg border border-border bg-white px-3 py-2.5"><option value="">Не выбран</option>{printers.map((printer) => <option key={printer} value={printer}>{printer}</option>)}</select></label>; }
+function CategoryDialog({ category, isSaving, onClose, onSave }: { category: AdminCategory | null; isSaving: boolean; onClose: () => void; onSave: (input: CategoryInput, id?: string) => Promise<void> }) { const [name, setName] = useState(category?.name ?? ""); const [sortOrder, setSortOrder] = useState(category?.sortOrder ?? 0); const [isActive, setIsActive] = useState(category?.isActive ?? true); const [fulfillmentType, setFulfillmentType] = useState<AdminCategory["fulfillmentType"]>(category?.fulfillmentType ?? "kitchen"); return <div className="fixed inset-0 z-30 grid place-items-center bg-slate-950/25 p-4"><form onSubmit={(event) => { event.preventDefault(); void onSave({ name, sortOrder, isActive, fulfillmentType }, category?.id); }} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">{category ? "Редактирование категории" : "Новая категория"}</h2><button type="button" onClick={onClose} className="text-xl text-slate-400">×</button></div><div className="mt-5 space-y-4"><Field label="Название категории"><input value={name} onChange={(event) => setName(event.target.value)} required className={inputClass} /></Field><Field label="Порядок отображения"><input value={sortOrder} onChange={(event) => setSortOrder(Number(event.target.value))} type="number" min="0" className={inputClass} /></Field><Field label="Готовится"><select value={fulfillmentType} onChange={(event) => setFulfillmentType(event.target.value as AdminCategory["fulfillmentType"])} className={inputClass}><option value="kitchen">На кухне</option><option value="counter">Витрина</option><option value="beverage">Напитки</option></select></Field><label className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-3 text-sm font-semibold">Активна<input checked={isActive} onChange={(event) => setIsActive(event.target.checked)} type="checkbox" className="size-5 accent-[#11AAA0]" /></label></div><div className="mt-6 flex justify-end gap-2"><button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold">Отмена</button><button disabled={isSaving} className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{category ? "Сохранить" : "Создать категорию"}</button></div></form></div>; }
 
-function CategoryForm({ category, isSaving, onSubmit }: { category: AdminCategory; isSaving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>, id: string) => Promise<void> }) {
-  return <form onSubmit={(event) => void onSubmit(event, category.id)} className="grid gap-3 rounded-xl bg-surface-muted p-3 md:grid-cols-[1fr_10rem_8rem_auto_auto]"><TextField name="name" label="Название" defaultValue={category.name} required /><FulfillmentField defaultValue={category.fulfillmentType} /><NumberField name="sortOrder" label="Порядок" defaultValue={String(category.sortOrder)} /><label className="flex items-end gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked={category.isActive} /> Активна</label><button disabled={isSaving} className="self-end rounded-xl border border-border px-4 py-3 font-semibold disabled:opacity-50">Сохранить</button></form>;
-}
-
-function FulfillmentField({ defaultValue = "kitchen" }: { defaultValue?: "kitchen" | "counter" | "beverage" }) {
-  return <label className="grid gap-1 text-sm font-medium">Готовится<select name="fulfillmentType" defaultValue={defaultValue} className="rounded-lg border border-border bg-white px-3 py-2.5"><option value="kitchen">На кухне</option><option value="counter">Витрина</option><option value="beverage">Напитки</option></select></label>;
-}
-
-function MenuItemForm({ item, categories, isSaving, onSubmit }: { item: AdminMenuItem; categories: AdminCategory[]; isSaving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>, id: string) => Promise<void> }) {
-  return <form onSubmit={(event) => void onSubmit(event, item.id)} className="grid gap-3 rounded-xl bg-surface-muted p-3 md:grid-cols-2 xl:grid-cols-[1fr_12rem_9rem_7rem_auto]"><TextField name="name" label="Название" defaultValue={item.name} required /><label className="grid gap-1 text-sm font-medium">Категория<select name="categoryId" defaultValue={item.categoryId} className="rounded-lg border border-border bg-white px-3 py-2.5">{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><TextField name="priceSom" label="Цена, сом" defaultValue={formatSom(item.priceTyiyn).replace(" сом", "")} required inputMode="decimal" /><NumberField name="sortOrder" label="Порядок" defaultValue={String(item.sortOrder)} /><div className="flex items-end gap-3"><label className="flex gap-2 pb-3 text-sm"><input name="isActive" type="checkbox" defaultChecked={item.isActive} /> Активно</label><button disabled={isSaving} className="rounded-xl border border-border px-4 py-3 font-semibold disabled:opacity-50">Сохранить</button></div></form>;
-}
-
-function TextField({ defaultValue, inputMode, label, name, placeholder, required }: { defaultValue?: string; inputMode?: "decimal"; label: string; name: string; placeholder?: string; required?: boolean }) {
-  return <label className="grid gap-1 text-sm font-medium">{label}<input name={name} defaultValue={defaultValue} inputMode={inputMode} placeholder={placeholder} required={required} className="rounded-lg border border-border bg-white px-3 py-2.5" /></label>;
-}
-
-function NumberField({ defaultValue, label, name }: { defaultValue: string; label: string; name: string }) {
-  return <label className="grid gap-1 text-sm font-medium">{label}<input name={name} type="number" min="0" step="1" defaultValue={defaultValue} required className="rounded-lg border border-border bg-white px-3 py-2.5" /></label>;
-}
-
-function readErrorMessage(payload: unknown): string {
-  if (!payload || typeof payload !== "object" || !("error" in payload)) return "Не удалось сохранить изменения.";
-  const error = payload.error;
-  return error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : "Не удалось сохранить изменения.";
-}
+function PrinterSettingsPanel() { const [printers, setPrinters] = useState<string[]>([]); const [settings, setSettings] = useState({ customerPrinter: "", kitchenPrinter: "" }); const [status, setStatus] = useState("QZ Tray ещё не проверен."); async function discover() { try { const found = await getQzPrinters(); setPrinters(found); setSettings(getPrinterSettings()); setStatus(`QZ Tray подключён: найдено принтеров — ${found.length}.`); } catch (error) { setStatus(error instanceof Error ? `QZ Tray недоступен: ${error.message}` : "QZ Tray недоступен."); } } function update(key: "customerPrinter" | "kitchenPrinter", value: string) { const next = { ...settings, [key]: value }; setSettings(next); savePrinterSettings(next); } return <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><div><h2 className="font-bold">Настройка принтеров</h2><p className="mt-1 text-sm text-slate-500">{status}</p></div><button type="button" onClick={() => void discover()} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold">Проверить QZ Tray</button></div>{printers.length > 0 && <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Клиентский принтер"><select value={settings.customerPrinter} onChange={(event) => update("customerPrinter", event.target.value)} className={inputClass}><option value="">Не выбран</option>{printers.map((printer) => <option key={printer}>{printer}</option>)}</select></Field><Field label="Кухонный принтер"><select value={settings.kitchenPrinter} onChange={(event) => update("kitchenPrinter", event.target.value)} className={inputClass}><option value="">Не выбран</option>{printers.map((printer) => <option key={printer}>{printer}</option>)}</select></Field></div>}</section>; }
+function Field({ children, label }: { children: ReactNode; label: string }) { return <label className="grid gap-1.5 text-sm font-semibold text-slate-700"><span>{label}</span>{children}</label>; }
+function toDraft(item: AdminMenuItem, isActive = item.isActive): ItemDraft { return { name: item.name, categoryId: item.categoryId, isActive, sortOrder: item.sortOrder, variants: item.variants.map((variant) => ({ name: variant.name, priceSom: formatSom(variant.priceTyiyn).replace(" сом", ""), sortOrder: variant.sortOrder, isActive: variant.isActive })) }; }
+function byOrder<T extends { sortOrder: number; name: string }>(a: T, b: T) { return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "ru"); }
+function pluralVariants(count: number) { const last = count % 10; const lastTwo = count % 100; return last === 1 && lastTwo !== 11 ? "вариант" : last >= 2 && last <= 4 && (lastTwo < 10 || lastTwo >= 20) ? "варианта" : "вариантов"; }
+function readErrorMessage(payload: unknown) { if (!payload || typeof payload !== "object" || !("error" in payload) || !payload.error || typeof payload.error !== "object" || !("message" in payload.error) || typeof payload.error.message !== "string") return "Не удалось сохранить изменения."; return payload.error.message; }
