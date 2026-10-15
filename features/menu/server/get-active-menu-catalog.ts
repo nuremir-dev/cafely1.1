@@ -1,9 +1,9 @@
 import "server-only";
 
-import type { FulfillmentType, MenuCatalog } from "@/features/menu/types";
+import type { MenuCatalog } from "@/features/menu/types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
-type CategoryRow = { id: string; name: string; fulfillment_type: FulfillmentType };
+type CategoryRow = { id: string; name: string };
 type MenuItemRow = {
   id: string;
   category_id: string;
@@ -11,6 +11,7 @@ type MenuItemRow = {
   price_tyiyn: number;
   is_quick: boolean;
   requires_service_location: boolean;
+  prepares_in_kitchen: boolean;
 };
 type VariantRow = { id: string; menu_item_id: string; name: string; price_tyiyn: number };
 
@@ -19,13 +20,13 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
   const [categoriesResult, itemsResult, variantsResult] = await Promise.all([
     supabase
       .from("categories")
-      .select("id, name, fulfillment_type")
+      .select("id, name")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
     supabase
       .from("menu_items")
-      .select("id, category_id, name, price_tyiyn, is_quick, requires_service_location")
+      .select("id, category_id, name, price_tyiyn, is_quick, requires_service_location, prepares_in_kitchen")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
@@ -59,7 +60,6 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
     categories: ((categoriesResult.data ?? []) as CategoryRow[]).map((category) => ({
       id: category.id,
       name: category.name,
-      fulfillmentType: category.fulfillment_type,
       items: (itemsByCategory.get(category.id) ?? []).map((item) => ({
         id: item.id,
         categoryId: item.category_id,
@@ -67,7 +67,7 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
         priceTyiyn: item.price_tyiyn,
         isQuick: Boolean(item.is_quick),
         requiresServiceLocation: Boolean(item.requires_service_location),
-        fulfillmentType: category.fulfillment_type,
+        preparesInKitchen: Boolean(item.prepares_in_kitchen),
         variants: (variantsByItem.get(item.id) ?? []).map((variant) => ({ id: variant.id, name: variant.name, priceTyiyn: variant.price_tyiyn })),
       })),
     })),

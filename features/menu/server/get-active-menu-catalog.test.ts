@@ -27,12 +27,12 @@ describe("getActiveMenuCatalog", () => {
 
   it("groups active item snapshots by active category in database order", async () => {
     const categoriesQuery = queryReturning({
-      data: [{ id: "main", name: "Основные", fulfillment_type: "kitchen" }, { id: "drinks", name: "Напитки", fulfillment_type: "beverage" }],
+      data: [{ id: "main", name: "Основные" }, { id: "drinks", name: "Напитки" }],
       error: null,
     });
     const itemsQuery = queryReturning({
       data: [
-        { id: "lagman", category_id: "main", name: "Лагман", price_tyiyn: 25_000 },
+        { id: "lagman", category_id: "main", name: "Лагман", price_tyiyn: 25_000, prepares_in_kitchen: true },
         { id: "orphan", category_id: "hidden", name: "Скрыто", price_tyiyn: 1 },
       ],
       error: null,
@@ -50,10 +50,9 @@ describe("getActiveMenuCatalog", () => {
         {
           id: "main",
           name: "Основные",
-          fulfillmentType: "kitchen",
-          items: [{ id: "lagman", categoryId: "main", name: "Лагман", priceTyiyn: 25_000, isQuick: false, requiresServiceLocation: false, fulfillmentType: "kitchen", variants: [{ id: "large", name: "Большой", priceTyiyn: 31_000 }] }],
+          items: [{ id: "lagman", categoryId: "main", name: "Лагман", priceTyiyn: 25_000, isQuick: false, requiresServiceLocation: false, preparesInKitchen: true, variants: [{ id: "large", name: "Большой", priceTyiyn: 31_000 }] }],
         },
-        { id: "drinks", name: "Напитки", fulfillmentType: "beverage", items: [] },
+        { id: "drinks", name: "Напитки", items: [] },
       ],
     });
   });

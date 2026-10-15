@@ -5,7 +5,7 @@ export type MenuItem = {
   priceTyiyn: number;
   isQuick: boolean;
   requiresServiceLocation: boolean;
-  fulfillmentType: FulfillmentType;
+  preparesInKitchen: boolean;
   variants: MenuItemVariant[];
 };
 
@@ -15,12 +15,9 @@ export type MenuItemVariant = {
   priceTyiyn: number;
 };
 
-export type FulfillmentType = "kitchen" | "counter" | "beverage";
-
 export type MenuCategory = {
   id: string;
   name: string;
-  fulfillmentType: FulfillmentType;
   items: MenuItem[];
 };
 

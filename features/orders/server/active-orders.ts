@@ -4,7 +4,6 @@ import { z } from "zod";
 
 import type { Session } from "@/features/auth/types";
 import type { CreatedOrder, OrderItemSnapshot } from "@/features/orders/types";
-import type { FulfillmentType } from "@/features/menu/types";
 import { ApiError } from "@/lib/http/api-error";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -20,7 +19,7 @@ const unknownCartItemSchema = z.object({ menuItemId: z.null(), menuItemVariantId
 const localCartItemsSchema = z.array(z.union([knownCartItemSchema, unknownCartItemSchema])).min(1).max(200);
 const kitchenCartItemsSchema = z.array(knownCartItemSchema).min(1).max(200);
 
-export type ActiveOrderItem = OrderItemSnapshot & { id: string; menuItemVariantId: string | null; sentQuantity: number; addedAt: string; fulfillmentType: FulfillmentType };
+export type ActiveOrderItem = OrderItemSnapshot & { id: string; menuItemVariantId: string | null; sentQuantity: number; addedAt: string; preparesInKitchen: boolean };
 export type ActiveOrder = {
   id: string;
   orderNumber: number;
@@ -34,7 +33,7 @@ export type ActiveOrder = {
 export type ActiveOrderSummary = Pick<ActiveOrder, "id" | "orderNumber" | "tableNumber" | "totalTyiyn" | "cashierName" | "createdAt">;
 
 type OrderRow = { id: string; order_number: number; table_number: number | null; total_tyiyn: number; cashier_name: string; created_at: string };
-type ItemRow = { id: string; menu_item_id: string | null; menu_item_variant_id: string | null; service_location: "hall" | "takeaway" | null; item_name: string; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: FulfillmentType };
+type ItemRow = { id: string; menu_item_id: string | null; menu_item_variant_id: string | null; service_location: "hall" | "takeaway" | null; item_name: string; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: "kitchen" | "counter" | "beverage" };
 type PrintJobRow = { id: string; type: "customer" | "kitchen"; status: "pending" | "processing" | "submitted" | "failed"; attempts: number; last_error: string | null };
 
 export async function listActiveOrders(): Promise<ActiveOrderSummary[]> {
@@ -281,6 +280,14 @@ export async function printLocalCartToKitchen(id: string, input: unknown): Promi
   const parsed = z.object({ items: kitchenCartItemsSchema, idempotencyKey: idempotencyKeySchema, stationId: z.string().min(8).max(100), printedLocally: z.boolean().default(false) }).safeParse(input);
   if (!parsed.success) throw invalidRequest();
   const supabase = createSupabaseAdminClient();
+  const menuItemIds = [...new Set(parsed.data.items.map((item) => item.menuItemId))];
+  const { data: kitchenItems, error: kitchenItemsError } = await supabase
+    .from("menu_items")
+    .select("id, prepares_in_kitchen")
+    .in("id", menuItemIds);
+  if (kitchenItemsError) throw kitchenItemsError;
+  if ((kitchenItems ?? []).length !== menuItemIds.length || (kitchenItems ?? []).some((item) => !item.prepares_in_kitchen))
+    throw new ApiError("INVALID_REQUEST", 400, "В кухонный чек можно отправить только блюда с настройкой «Готовится на кухне».");
   const { data, error } = await supabase.rpc("print_cafeline_local_cart_to_kitchen", {
     p_order_id: id,
     p_items: parsed.data.items.map((item) => ({ menu_item_id: item.menuItemId, menu_item_variant_id: item.menuItemVariantId, quantity: item.quantity, service_location: item.serviceLocation ?? "hall" })),
@@ -313,7 +320,7 @@ function toSummary(row: OrderRow): ActiveOrderSummary {
   return { id: row.id, orderNumber: row.order_number, tableNumber: row.table_number, totalTyiyn: row.total_tyiyn, cashierName: row.cashier_name, createdAt: row.created_at };
 }
 function toActiveItem(row: ItemRow): ActiveOrderItem {
-  return { id: row.id, menuItemId: row.menu_item_id, menuItemVariantId: row.menu_item_variant_id, serviceLocation: row.service_location ?? undefined, itemName: row.item_name, unitPriceTyiyn: row.unit_price_tyiyn, quantity: row.quantity, sentQuantity: row.sent_quantity, lineTotalTyiyn: row.line_total_tyiyn, addedAt: row.added_at, fulfillmentType: row.fulfillment_type };
+  return { id: row.id, menuItemId: row.menu_item_id, menuItemVariantId: row.menu_item_variant_id, serviceLocation: row.service_location ?? undefined, itemName: row.item_name, unitPriceTyiyn: row.unit_price_tyiyn, quantity: row.quantity, sentQuantity: row.sent_quantity, lineTotalTyiyn: row.line_total_tyiyn, addedAt: row.added_at, preparesInKitchen: row.fulfillment_type === "kitchen" };
 }
 function toPrintable(order: OrderRow, items: ItemRow[], jobs: PrintJobRow[]): CreatedOrder {
   return { id: order.id, orderNumber: order.order_number, tableNumber: order.table_number, totalTyiyn: order.total_tyiyn, cashierName: order.cashier_name, createdAt: order.created_at, items: items.map((item) => ({ menuItemId: item.menu_item_id, serviceLocation: item.service_location ?? undefined, itemName: item.item_name, unitPriceTyiyn: item.unit_price_tyiyn, quantity: item.quantity, lineTotalTyiyn: item.line_total_tyiyn })), printJobs: jobs.map((job) => ({ id: job.id, type: job.type, status: job.status, attempts: job.attempts, lastError: job.last_error })), created: true };

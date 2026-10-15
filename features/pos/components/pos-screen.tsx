@@ -626,7 +626,7 @@ export function PosScreen() {
       sentQuantity: 1,
       lineTotalTyiyn: amountTyiyn,
       addedAt: new Date().toISOString(),
-      fulfillmentType: "counter",
+      preparesInKitchen: false,
     };
     setActive((current) => {
       if (!current) return current;
@@ -706,6 +706,7 @@ export function PosScreen() {
     const kitchenItems = items.filter(
       (item) =>
         item.menuItemId !== null &&
+        item.preparesInKitchen &&
         (repeat || item.sentQuantity < item.quantity),
     );
     if (
@@ -786,7 +787,7 @@ export function PosScreen() {
             sentQuantity: 0,
             lineTotalTyiyn: item.priceTyiyn * delta,
             addedAt: new Date().toISOString(),
-            fulfillmentType: item.fulfillmentType,
+            preparesInKitchen: item.preparesInKitchen,
           },
           ...items,
         ];
@@ -916,7 +917,7 @@ export function PosScreen() {
     active?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0;
   const hasPendingKitchenItems =
     active?.items.some(
-      (item) => item.menuItemId !== null && item.sentQuantity < item.quantity,
+      (item) => item.menuItemId !== null && item.preparesInKitchen && item.sentQuantity < item.quantity,
     ) ?? false;
   const isOrderLocked = isTransitioning || Boolean(active?.pendingCompletion);
   const orderedOrders = useMemo(
@@ -1197,7 +1198,7 @@ export function PosScreen() {
                         item={item}
                         disabled={isOrderLocked}
                         canChangeQuantity
-                        isSentToKitchen={item.menuItemId !== null && item.sentQuantity >= item.quantity}
+                        isSentToKitchen={item.menuItemId !== null && item.preparesInKitchen && item.sentQuantity >= item.quantity}
                         onDecrease={() => subtractItem(item)}
                         onIncrease={() => {
                           if (active && item.menuItemId)
@@ -1210,7 +1211,7 @@ export function PosScreen() {
                             changeUnknownPurchaseQuantity(item, 1);
                         }}
                         onRemove={() => void removeItem(item)}
-                        onSend={item.menuItemId ? () =>
+                        onSend={item.menuItemId && item.preparesInKitchen ? () =>
                           void printLocalItemsToKitchen(
                             [item],
                             `${item.itemName} передано на печатную станцию. Корзина не изменена.`,
@@ -1244,10 +1245,12 @@ export function PosScreen() {
                         "Новые блюда переданы на печатную станцию. Корзина не изменена.",
                       );
                     }}
-                    disabled={isOrderLocked}
+                    disabled={isOrderLocked || !active.items.some((item) => item.menuItemId !== null && item.preparesInKitchen)}
                     className={`mt-4 w-full rounded-2xl border px-4 py-3 text-sm font-bold disabled:opacity-40 ${active.hasKitchenTicket && !hasPendingKitchenItems ? "border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200" : "border-primary bg-teal-50 text-primary-strong hover:bg-teal-100"}`}
                   >
-                    {active.hasKitchenTicket && !hasPendingKitchenItems
+                    {!active.items.some((item) => item.menuItemId !== null && item.preparesInKitchen)
+                      ? "Нет блюд для кухни"
+                      : active.hasKitchenTicket && !hasPendingKitchenItems
                       ? "Уже отправлено на кухню"
                       : "Отправить новые блюда на кухню"}
                   </button>
@@ -1644,7 +1647,7 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
     priceTyiyn: item.unitPriceTyiyn,
     isQuick: false,
     requiresServiceLocation: false,
-    fulfillmentType: item.fulfillmentType,
+    preparesInKitchen: item.preparesInKitchen,
     variants: [],
     selectedVariantId: item.menuItemVariantId,
     serviceLocation: item.serviceLocation,
