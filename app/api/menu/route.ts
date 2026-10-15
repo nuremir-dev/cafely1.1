@@ -6,7 +6,10 @@ export async function GET() {
   try {
     await requireApiSession();
     const catalog = await getActiveMenuCatalog();
-    return Response.json({ data: catalog });
+    return Response.json(
+      { data: catalog },
+      { headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" } },
+    );
   } catch (error) {
     if (error instanceof ApiError) return errorResponse(error);
 

@@ -66,7 +66,7 @@ describe("menu administration service", () => {
 
     await expect(getAdminMenuData()).resolves.toEqual({
       categories: [{ id: categoryId, name: "Напитки", sortOrder: 2, isActive: false, fulfillmentType: "beverage" }],
-      items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false, variants: [] }],
+      items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false, isQuick: false, variants: [] }],
     });
   });
 
@@ -117,8 +117,8 @@ describe("menu administration service", () => {
 
     await expect(createMenuItem(itemInput)).resolves.toMatchObject({ priceTyiyn: 4_000, isActive: true });
     await expect(updateMenuItem(itemId, { ...itemInput, priceTyiyn: 4_500, isActive: false })).resolves.toMatchObject({ priceTyiyn: 4_500, isActive: false });
-    expect(createdQuery.insert).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_000, sort_order: 3, is_active: true });
-    expect(updatedQuery.update).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false });
+    expect(createdQuery.insert).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_000, sort_order: 3, is_active: true, is_quick: false });
+    expect(updatedQuery.update).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, is_quick: false });
   });
 
   it("rejects malformed values before database access", async () => {

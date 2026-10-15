@@ -3,6 +3,7 @@ export type MenuItem = {
   categoryId: string;
   name: string;
   priceTyiyn: number;
+  isQuick: boolean;
   fulfillmentType: FulfillmentType;
   variants: MenuItemVariant[];
 };

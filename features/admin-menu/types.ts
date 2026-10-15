@@ -15,6 +15,7 @@ export type AdminMenuItem = {
   priceTyiyn: number;
   sortOrder: number;
   isActive: boolean;
+  isQuick: boolean;
   variants: AdminMenuItemVariant[];
 };
 

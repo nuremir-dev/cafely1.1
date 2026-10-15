@@ -69,11 +69,11 @@ export function AppShell({ children, session }: { children: ReactNode; session: 
         </header>}
 
         <div className={`${pathname === "/pos" ? "" : "mt-3 sm:mt-5"} flex gap-3 sm:gap-5`}>
-          <aside className="hidden w-[12.2rem] shrink-0 rounded-[1.7rem] border border-white/80 bg-white/90 p-3 shadow-[0_10px_34px_rgba(56,72,65,0.08)] backdrop-blur-xl lg:block">
+          <aside className={`hidden shrink-0 rounded-[1.7rem] border border-white/80 bg-white/90 shadow-[0_10px_34px_rgba(56,72,65,0.08)] backdrop-blur-xl lg:block ${pathname === "/pos" ? "w-[4.5rem] p-2" : "w-[12.2rem] p-3"}`}>
             <nav className="space-y-1.5" aria-label="Основная навигация">
-              {links.map((link) => <NavigationLink key={link.href} link={link} active={pathname === link.href} />)}
+              {links.map((link) => <NavigationLink key={link.href} link={link} active={pathname === link.href} compact={pathname === "/pos"} />)}
             </nav>
-            <div className="mt-5 border-t border-slate-100 pt-4"><p className="px-3 text-xs text-slate-400">Статус печати</p><p className={`mt-2 flex items-center gap-2 px-3 text-xs font-medium ${printerState === "unavailable" ? "text-red-500" : "text-slate-500"}`}><span className={`size-2 rounded-full ${printerState === "ready" ? "bg-emerald-500" : printerState === "checking" ? "bg-amber-400" : "bg-red-400"}`} />{printerLabel}</p></div>
+            {pathname !== "/pos" && <div className="mt-5 border-t border-slate-100 pt-4"><p className="px-3 text-xs text-slate-400">Статус печати</p><p className={`mt-2 flex items-center gap-2 px-3 text-xs font-medium ${printerState === "unavailable" ? "text-red-500" : "text-slate-500"}`}><span className={`size-2 rounded-full ${printerState === "ready" ? "bg-emerald-500" : printerState === "checking" ? "bg-amber-400" : "bg-red-400"}`} />{printerLabel}</p></div>}
           </aside>
           <nav className="fixed inset-x-3 bottom-3 z-10 flex justify-around rounded-2xl border border-white/80 bg-white/95 p-2 shadow-xl backdrop-blur-xl lg:hidden" aria-label="Основная навигация">
             {links.map((link) => <MobileNavigationLink key={link.href} link={link} active={pathname === link.href} />)}
@@ -85,8 +85,8 @@ export function AppShell({ children, session }: { children: ReactNode; session: 
   );
 }
 
-function NavigationLink({ active, link }: { active: boolean; link: NavigationItem }) {
-  return <Link href={link.href} className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition ${active ? "bg-[#e4f5f1] text-primary-strong shadow-sm" : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"}`}><ShellIcon name={link.icon} className="size-5" />{link.label}</Link>;
+function NavigationLink({ active, compact, link }: { active: boolean; compact: boolean; link: NavigationItem }) {
+  return <Link href={link.href} title={link.label} aria-label={link.label} className={`flex items-center rounded-xl py-3 text-sm font-semibold transition ${compact ? "justify-center px-2" : "gap-3 px-3"} ${active ? "bg-[#e4f5f1] text-primary-strong shadow-sm" : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"}`}><ShellIcon name={link.icon} className="size-5" />{!compact && link.label}</Link>;
 }
 
 function MobileNavigationLink({ active, link }: { active: boolean; link: NavigationItem }) {

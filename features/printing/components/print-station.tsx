@@ -40,7 +40,7 @@ export function PrintStation() {
       finally { busy = false; }
     }
     void poll();
-    const timer = window.setInterval(() => void poll(), 2_000);
+    const timer = window.setInterval(() => void poll(), 750);
     return () => { alive = false; window.clearInterval(timer); };
   }, [enabled]);
 
