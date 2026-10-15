@@ -35,7 +35,7 @@ export type ActiveOrderSummary = Pick<ActiveOrder, "id" | "orderNumber" | "table
 
 type OrderRow = { id: string; order_number: number; table_number: number | null; total_tyiyn: number; cashier_name: string; created_at: string };
 type ItemRow = { id: string; menu_item_id: string | null; menu_item_variant_id: string | null; service_location: "hall" | "takeaway" | null; item_name: string; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: FulfillmentType };
-type PrintJobRow = { id: string; type: "customer" | "kitchen"; status: "pending" | "submitted" | "failed"; attempts: number; last_error: string | null };
+type PrintJobRow = { id: string; type: "customer" | "kitchen"; status: "pending" | "processing" | "submitted" | "failed"; attempts: number; last_error: string | null };
 
 export async function listActiveOrders(): Promise<ActiveOrderSummary[]> {
   const { data, error } = await createSupabaseAdminClient()
@@ -262,18 +262,11 @@ export async function completeLocalCart(id: string, input: unknown): Promise<Cre
   const { data, error } = await supabase.rpc("complete_cafeline_local_cart", {
     p_order_id: id,
     p_items: parsed.data.items.map((item) => ({ menu_item_id: item.menuItemId, menu_item_variant_id: item.menuItemVariantId, quantity: item.quantity, ad_hoc_amount_tyiyn: "adHocAmountTyiyn" in item ? item.adHocAmountTyiyn : null, service_location: item.menuItemId === null ? null : item.serviceLocation ?? "hall" })),
+    p_customer_receipt_printed: parsed.data.customerReceiptPrinted ?? false,
   });
   if (error) throw mapRpcError(error, "Не удалось сохранить корзину.");
   const result = (data as Array<{ print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал клиентский чек.");
-  if (parsed.data.customerReceiptPrinted) {
-    const { error: printError } = await supabase.rpc("report_cafeline_print_job", {
-      p_job_id: result.print_job_id,
-      p_status: "submitted",
-      p_last_error: null,
-    });
-    if (printError) throw new ApiError("INTERNAL_ERROR", 500, "Заказ сохранён, но не удалось подтвердить локальную печать.");
-  }
   const [orderResult, itemsResult, jobResult] = await Promise.all([
     supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
     supabase.from("order_items").select("menu_item_id, service_location, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("order_id", id).order("id", { ascending: true }),
@@ -285,13 +278,14 @@ export async function completeLocalCart(id: string, input: unknown): Promise<Cre
 
 export async function printLocalCartToKitchen(id: string, input: unknown): Promise<CreatedOrder> {
   if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
-  const parsed = z.object({ items: kitchenCartItemsSchema, idempotencyKey: idempotencyKeySchema }).safeParse(input);
+  const parsed = z.object({ items: kitchenCartItemsSchema, idempotencyKey: idempotencyKeySchema, stationId: z.string().min(8).max(100), printedLocally: z.boolean().default(false) }).safeParse(input);
   if (!parsed.success) throw invalidRequest();
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase.rpc("print_cafeline_local_cart_to_kitchen", {
     p_order_id: id,
     p_items: parsed.data.items.map((item) => ({ menu_item_id: item.menuItemId, menu_item_variant_id: item.menuItemVariantId, quantity: item.quantity, service_location: item.serviceLocation ?? "hall" })),
     p_idempotency_key: parsed.data.idempotencyKey,
+    p_station_id: parsed.data.stationId,
   });
   if (error) throw mapRpcError(error, "Не удалось передать блюда на кухню.");
   const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
@@ -302,6 +296,16 @@ export async function printLocalCartToKitchen(id: string, input: unknown): Promi
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Кухонная заявка сохранена, но не удалось подготовить печать.");
+  if (parsed.data.printedLocally && (jobResult.data as PrintJobRow).status === "processing") {
+    const { error: reportError } = await supabase.rpc("report_cafeline_station_print_job", {
+      p_job_id: result.print_job_id,
+      p_station_id: parsed.data.stationId,
+      p_status: "submitted",
+      p_last_error: null,
+    });
+    if (reportError) throw new ApiError("INTERNAL_ERROR", 500, "Кухонный чек напечатан, но не удалось подтвердить синхронизацию.");
+    (jobResult.data as PrintJobRow).status = "submitted";
+  }
   return toPrintable(orderResult.data as OrderRow, (itemsResult.data ?? []) as ItemRow[], [jobResult.data as PrintJobRow]);
 }
 

@@ -2,7 +2,7 @@
 
 import type { CreatedOrder, PrintJob } from "@/features/orders/types";
 import * as lna from "qz-lna";
-import { customerReceipt, kitchenReceipt } from "./templates";
+import { customerReceipt, kitchenReceipt, kitchenReceiptHeightMm } from "./templates";
 
 const SETTINGS_KEY = "cafeline:printers:v1";
 const PRINT_STATION_KEY = "cafeline:print-station:v1";
@@ -94,6 +94,28 @@ export async function printCustomerReceiptSnapshot(order: CreatedOrder) {
   }]);
 }
 
+export async function printKitchenReceiptSnapshot(order: CreatedOrder) {
+  const printer = getPrinterSettings().kitchenPrinter;
+  if (!printer) throw new Error("Кухонный принтер не выбран.");
+  const api = await qz();
+  if (!api.websocket.isActive()) await api.websocket.connect();
+  const config = api.configs.create(printer, {
+    units: "mm",
+    margins: 0,
+    scaleContent: false,
+    orientation: "portrait",
+    rotation: 0,
+    size: { width: 80, height: kitchenReceiptHeightMm(order) },
+  });
+  await api.print(config, [{
+    type: "pixel",
+    format: "html",
+    flavor: "plain",
+    data: kitchenReceipt(order),
+    options: { pageWidth: 80, pageHeight: kitchenReceiptHeightMm(order) },
+  }]);
+}
+
 export async function printOrder(
   order: CreatedOrder,
   onResult: (
@@ -115,11 +137,14 @@ export async function printOrder(
       if (!printer) throw new Error("Принтер не выбран.");
       const api = await qz();
       if (!api.websocket.isActive()) await api.websocket.connect();
+      const kitchenHeight = job.type === "kitchen" ? kitchenReceiptHeightMm(order) : undefined;
       const config = api.configs.create(printer, {
         units: "mm",
         margins: 0,
         scaleContent: false,
-        size: { width: 80 },
+        orientation: "portrait",
+        rotation: 0,
+        size: kitchenHeight ? { width: 80, height: kitchenHeight } : { width: 80 },
       });
       const data = job.type === "customer" ? customerReceipt(order) : kitchenReceipt(order);
       await api.print(config, [{
@@ -129,7 +154,7 @@ export async function printOrder(
         data,
         // QZ calculates an HTML document's height automatically when this is
         // omitted. The explicit width keeps a receipt on 80 mm paper.
-        options: { pageWidth: 80 },
+        options: kitchenHeight ? { pageWidth: 80, pageHeight: kitchenHeight } : { pageWidth: 80 },
       }]);
       await onResult(job, "submitted");
     } catch (error) {

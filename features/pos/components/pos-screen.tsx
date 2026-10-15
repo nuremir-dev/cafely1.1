@@ -9,8 +9,8 @@ import type {
   ActiveOrder,
   ActiveOrderSummary,
 } from "@/features/orders/server/active-orders";
-import { readPosCache, type CachedPosOrder, writePosCache } from "@/features/pos/local-pos-cache";
-import { getPrintStationId, printCustomerReceiptSnapshot, printOrder } from "@/features/printing/qz-client";
+import { readPosCache, type CachedPosOrder, type PendingKitchenPrint, writePosCache } from "@/features/pos/local-pos-cache";
+import { getPrintStationId, printCustomerReceiptSnapshot, printKitchenReceiptSnapshot } from "@/features/printing/qz-client";
 import type { CashShift, ShiftDashboard } from "@/features/shifts/types";
 import { TableGrid } from "@/features/tables/components/table-grid";
 
@@ -18,7 +18,6 @@ type MenuResponse = { data: MenuCatalog };
 type ActiveOrdersResponse = { data: ActiveOrder[] };
 type ActiveOrderResponse = { data: ActiveOrder };
 type PrintableResponse = { data: CreatedOrder };
-type ClaimResponse = { data: boolean };
 type TableMapResponse = {
   data: { cells: number[]; rows: number; columns: number };
 };
@@ -69,6 +68,7 @@ export function PosScreen() {
   const activeOrderRef = useRef<CachedPosOrder | null>(null);
   const cachedOrdersRef = useRef<Record<string, CachedPosOrder>>({});
   const completingOrderIds = useRef(new Set<string>());
+  const syncingKitchenPrintIds = useRef(new Set<string>());
 
   useEffect(() => {
     activeOrderRef.current = active;
@@ -130,6 +130,7 @@ export function PosScreen() {
         customerReceiptPrintedAt: existing?.customerReceiptPrintedAt,
         pendingCompletion: existing?.pendingCompletion,
         completionSyncError: existing?.completionSyncError,
+        pendingKitchenPrints: existing?.pendingKitchenPrints,
         syncState: "synced",
       };
       cachedOrdersRef.current = { ...cachedOrdersRef.current, [order.id]: order };
@@ -160,6 +161,7 @@ export function PosScreen() {
           customerReceiptPrintedAt: cached?.customerReceiptPrintedAt,
           pendingCompletion: cached?.pendingCompletion,
           completionSyncError: cached?.completionSyncError,
+          pendingKitchenPrints: cached?.pendingKitchenPrints,
           syncState: "synced" as const,
         };
       });
@@ -290,6 +292,7 @@ export function PosScreen() {
         customerReceiptPrintedAt: (cachedOrdersRef.current[draft.id] ?? draft).customerReceiptPrintedAt,
         pendingCompletion: (cachedOrdersRef.current[draft.id] ?? draft).pendingCompletion,
         completionSyncError: (cachedOrdersRef.current[draft.id] ?? draft).completionSyncError,
+        pendingKitchenPrints: (cachedOrdersRef.current[draft.id] ?? draft).pendingKitchenPrints,
         syncState: "synced",
         pendingTableNumber: payload.data.tableNumber === (cachedOrdersRef.current[draft.id] ?? draft).tableNumber
           ? undefined
@@ -340,6 +343,7 @@ export function PosScreen() {
         customerReceiptPrintedAt: current.customerReceiptPrintedAt,
         pendingCompletion: current.pendingCompletion,
         completionSyncError: current.completionSyncError,
+        pendingKitchenPrints: current.pendingKitchenPrints,
         syncState: "synced",
         pendingTableNumber: current.pendingTableNumber === payload.data.tableNumber ? undefined : current.pendingTableNumber,
       };
@@ -443,11 +447,54 @@ export function PosScreen() {
       completingOrderIds.current.delete(draft.id);
     }
   }, [loadOrders, syncLocalOrder]);
+  const syncPendingKitchenPrint = useCallback(async (draft: CachedPosOrder, pending: PendingKitchenPrint) => {
+    if (syncingKitchenPrintIds.current.has(pending.idempotencyKey)) return draft;
+    syncingKitchenPrintIds.current.add(pending.idempotencyKey);
+    try {
+      let order = draft;
+      if (order.syncState !== "synced") order = await syncLocalOrder(order);
+      const response = await fetch(`/api/active-orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "print-local-cart-to-kitchen",
+          idempotencyKey: pending.idempotencyKey,
+          stationId: getPrintStationId(),
+          printedLocally: true,
+          items: pending.items,
+        }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isPrintableResponse(payload))
+        throw new Error(message(payload, "Не удалось синхронизировать кухонный чек."));
+
+      const current = cachedOrdersRef.current[order.id] ?? order;
+      const next = {
+        ...current,
+        hasKitchenTicket: true,
+        pendingKitchenPrints: (current.pendingKitchenPrints ?? []).filter((entry) => entry.idempotencyKey !== pending.idempotencyKey),
+      };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      if (activeOrderRef.current?.id === next.id) {
+        activeOrderRef.current = next;
+        setActive(next);
+      }
+      return next;
+    } finally {
+      syncingKitchenPrintIds.current.delete(pending.idempotencyKey);
+    }
+  }, [syncLocalOrder]);
   useEffect(() => {
     const synchronizePendingOrders = () => {
       for (const order of Object.values(cachedOrdersRef.current)) {
         if (order.pendingCompletion && order.customerReceiptPrintedAt) {
           void completePrintedOrder(order).catch(() => undefined);
+          continue;
+        }
+        if (order.pendingKitchenPrints?.length) {
+          for (const pending of order.pendingKitchenPrints)
+            void syncPendingKitchenPrint(order, pending).catch(() => undefined);
           continue;
         }
         if (order.pendingTableNumber !== undefined && !order.syncKey) {
@@ -469,7 +516,7 @@ export function PosScreen() {
       window.clearInterval(timer);
       window.removeEventListener("online", synchronizePendingOrders);
     };
-  }, [completePrintedOrder, syncLocalOrder, syncTableAssignment]);
+  }, [completePrintedOrder, syncLocalOrder, syncPendingKitchenPrint, syncTableAssignment]);
   const createOrder = useCallback(async () => {
     if (isCreating) return;
     activeOrderRevision.current += 1;
@@ -671,51 +718,41 @@ export function PosScreen() {
     setIsTransitioning(true);
     setNotice(null);
     try {
-      let order = active;
-      if (order.syncState !== "synced") order = await syncLocalOrder(order);
-      const response = await fetch(`/api/active-orders/${order.id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "print-local-cart-to-kitchen",
-          idempotencyKey: crypto.randomUUID(),
-          items: kitchenItems.map((item) => ({
-            menuItemId: item.menuItemId,
-            menuItemVariantId: item.menuItemVariantId,
-            quantity: repeat ? item.quantity : item.quantity - item.sentQuantity,
-            serviceLocation: item.serviceLocation ?? "hall",
-          })),
-        }),
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok || !isPrintableResponse(payload))
-        throw new Error(
-          message(payload, "Не удалось передать блюда на кухню."),
-        );
-      const printed = await printCreatedOrderLocally(payload.data);
-      if (!printed) throw new Error("Блюдо сохранено для кухни, но не удалось напечатать чек.");
+      const pending: PendingKitchenPrint = {
+        idempotencyKey: crypto.randomUUID(),
+        printedAt: new Date().toISOString(),
+        items: kitchenItems.flatMap((item) => item.menuItemId ? [{
+          menuItemId: item.menuItemId,
+          menuItemVariantId: item.menuItemVariantId,
+          quantity: repeat ? item.quantity : item.quantity - item.sentQuantity,
+          serviceLocation: item.serviceLocation ?? "hall",
+        }] : []),
+      };
+      if (!pending.items.length) return;
+      await printKitchenReceiptSnapshot(toLocalKitchenReceipt(active, kitchenItems, pending.items));
+      const sentItemIds = new Set(kitchenItems.map((item) => item.id));
+      const next = {
+        ...active,
+        hasKitchenTicket: true,
+        pendingKitchenPrints: [...(active.pendingKitchenPrints ?? []), pending],
+        items: active.items.map((item) =>
+          !repeat && sentItemIds.has(item.id) ? { ...item, sentQuantity: item.quantity } : item,
+        ),
+      };
+      activeOrderRef.current = next;
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      setActive(next);
       setNotice(successMessage);
-      setActive((current) => {
-        if (current?.id !== order.id) return current;
-        const sentItemIds = new Set(kitchenItems.map((item) => item.id));
-        const next = {
-          ...current,
-          hasKitchenTicket: true,
-          items: current.items.map((item) =>
-            sentItemIds.has(item.id) ? { ...item, sentQuantity: item.quantity } : item,
-          ),
-        };
-        activeOrderRef.current = next;
-        cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
-        setCachedOrders(cachedOrdersRef.current);
-        return next;
+      void syncPendingKitchenPrint(next, pending).catch((cause) => {
+        setError(cause instanceof Error ? `Кухонный чек напечатан. ${cause.message}` : "Кухонный чек напечатан и будет синхронизирован автоматически.");
       });
       setError(null);
     } catch (cause) {
       setError(
         cause instanceof Error
           ? cause.message
-          : "Не удалось передать блюда на кухню.",
+          : "Не удалось распечатать кухонный чек.",
       );
     } finally {
       setIsTransitioning(false);
@@ -828,35 +865,6 @@ export function PosScreen() {
       );
     } finally {
       setIsTransitioning(false);
-    }
-  }
-  async function printCreatedOrderLocally(order: CreatedOrder): Promise<boolean> {
-    const job = order.printJobs[0];
-    if (!job) return false;
-    const stationId = getPrintStationId();
-    try {
-      const response = await fetch(`/api/print-jobs/${job.id}/claim`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ stationId }),
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok || !isClaimResponse(payload) || !payload.data) return false;
-      let printed = false;
-      await printOrder(order, async (printJob, status, lastError) => {
-        const report = await fetch(`/api/print-jobs/${printJob.id}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ status, lastError: lastError ?? null, stationId }),
-        });
-        if (!report.ok) throw new Error("Не удалось сохранить результат печати.");
-        printed = status === "submitted";
-      }, job.type, job.id);
-      return printed;
-    } catch {
-      // The claimed job remains available for the configured fallback station
-      // once its short processing lease expires.
-      return false;
     }
   }
   async function deleteEmptyOrder() {
@@ -1601,6 +1609,18 @@ function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
     created: false,
   };
 }
+function toLocalKitchenReceipt(
+  order: CachedPosOrder,
+  sourceItems: ActiveOrder["items"],
+  printItems: PendingKitchenPrint["items"],
+): CreatedOrder {
+  const items = printItems.map((printItem) => {
+    const source = sourceItems.find((item) => item.menuItemId === printItem.menuItemId && item.menuItemVariantId === printItem.menuItemVariantId && item.serviceLocation === printItem.serviceLocation);
+    if (!source) throw new Error("Не удалось подготовить локальный кухонный чек.");
+    return { menuItemId: source.menuItemId, serviceLocation: printItem.serviceLocation, itemName: source.itemName, unitPriceTyiyn: source.unitPriceTyiyn, quantity: printItem.quantity, lineTotalTyiyn: source.unitPriceTyiyn * printItem.quantity };
+  });
+  return { id: order.id, orderNumber: order.orderNumber, tableNumber: order.tableNumber, totalTyiyn: items.reduce((sum, item) => sum + item.lineTotalTyiyn, 0), cashierName: order.cashierName, createdAt: order.createdAt, items, printJobs: [], created: false };
+}
 function selectMenuItem(
   item: MenuItem,
   variant: MenuItem["variants"][number] | undefined,
@@ -1721,9 +1741,6 @@ function isPrintableResponse(value: unknown): value is PrintableResponse {
     typeof value.data === "object" &&
     "printJobs" in value.data,
   );
-}
-function isClaimResponse(value: unknown): value is ClaimResponse {
-  return Boolean(value && typeof value === "object" && "data" in value && typeof value.data === "boolean");
 }
 function isShiftDashboardResponse(value: unknown): value is { data: ShiftDashboard } {
   return Boolean(value && typeof value === "object" && "data" in value && value.data && typeof value.data === "object" && "currentShift" in value.data && "shifts" in value.data);

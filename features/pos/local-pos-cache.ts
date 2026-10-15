@@ -7,6 +7,16 @@ const storeName = "state";
 const stateKey = "active-orders-v1";
 
 export type PosSyncState = "local" | "syncing" | "synced" | "sync-error";
+export type PendingKitchenPrint = {
+  idempotencyKey: string;
+  printedAt: string;
+  items: Array<{
+    menuItemId: string;
+    menuItemVariantId: string | null;
+    quantity: number;
+    serviceLocation: "hall" | "takeaway";
+  }>;
+};
 export type CachedPosOrder = ActiveOrder & {
   syncState: PosSyncState;
   syncKey?: string;
@@ -15,6 +25,7 @@ export type CachedPosOrder = ActiveOrder & {
   customerReceiptPrintedAt?: string;
   pendingCompletion?: boolean;
   completionSyncError?: string;
+  pendingKitchenPrints?: PendingKitchenPrint[];
 };
 export type PosCache = {
   version: 1;

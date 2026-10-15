@@ -14,3 +14,16 @@ export function kitchenReceipt(order: CreatedOrder): string {
   const location = order.tableNumber ? `СТОЛ ${order.tableNumber}` : "НОВЫЙ ЗАКАЗ";
   return shell(`<h1>КУХНЯ</h1><p class="center big">${location}</p><p class="center">ЗАКАЗ №${order.orderNumber}<br>${time(order.createdAt)}</p><hr>${order.items.map((item) => `<p class="big">${item.quantity} × ${escapeHtml(item.itemName).toUpperCase()}</p>`).join("")}<hr>`);
 }
+
+/**
+ * The Java HTML renderer behind QZ cannot reliably infer an endless roll's
+ * height for every thermal driver.  A generous content-based length prevents
+ * drivers from reversing, scaling, or clipping long kitchen tickets.
+ */
+export function kitchenReceiptHeightMm(order: CreatedOrder): number {
+  const itemsHeight = order.items.reduce((sum, item) => {
+    const lines = Math.max(1, Math.ceil(item.itemName.length / 19));
+    return sum + lines * 7 + 4;
+  }, 0);
+  return Math.max(62, Math.min(600, 42 + itemsHeight));
+}
