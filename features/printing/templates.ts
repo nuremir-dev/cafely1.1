@@ -10,6 +10,19 @@ export function customerReceipt(order: CreatedOrder): string {
   return shell(`<h1>MANGO</h1><p class="center">${title}<br>${time(order.createdAt)}</p><hr><table>${order.items.map((item) => `<tr><td>${escapeHtml(item.itemName)}<br><small>${item.quantity} × ${som(item.unitPriceTyiyn)}</small></td><td>${som(item.lineTotalTyiyn)}</td></tr>`).join("")}</table><hr><p class="big">ИТОГО: ${som(order.totalTyiyn)}</p><p class="center">Спасибо за заказ!</p><p class="center">Было вкусно? Оставьте комментарий<br>@mango.karakol ❤</p>`);
 }
 
+/**
+ * Customer receipts include a table plus a multi-line footer.  QZ's HTML
+ * renderer needs an explicit roll length for some thermal drivers; estimating
+ * it from every wrapped item prevents both blank fixed feed and clipping.
+ */
+export function customerReceiptHeightMm(order: CreatedOrder): number {
+  const itemsHeight = order.items.reduce((sum, item) => {
+    const nameLines = Math.max(1, Math.ceil(item.itemName.length / 24));
+    return sum + nameLines * 5 + 6;
+  }, 0);
+  return Math.max(74, 48 + itemsHeight);
+}
+
 export function kitchenReceipt(order: CreatedOrder, options?: { cancellation?: boolean }): string {
   const location = order.tableNumber ? `СТОЛ ${order.tableNumber}` : "НОВЫЙ ЗАКАЗ";
   const title = options?.cancellation ? "ОТМЕНА" : "КУХНЯ";
