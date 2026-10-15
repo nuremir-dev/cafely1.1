@@ -74,6 +74,26 @@ export async function getQzPrinters(): Promise<string[]> {
   return api.printers.find();
 }
 
+export async function printCustomerReceiptSnapshot(order: CreatedOrder) {
+  const printer = getPrinterSettings().customerPrinter;
+  if (!printer) throw new Error("Принтер клиентских чеков не выбран.");
+  const api = await qz();
+  if (!api.websocket.isActive()) await api.websocket.connect();
+  const config = api.configs.create(printer, {
+    units: "mm",
+    margins: 0,
+    scaleContent: false,
+    size: { width: 80 },
+  });
+  await api.print(config, [{
+    type: "pixel",
+    format: "html",
+    flavor: "plain",
+    data: customerReceipt(order),
+    options: { pageWidth: 80 },
+  }]);
+}
+
 export async function printOrder(
   order: CreatedOrder,
   onResult: (
@@ -95,9 +115,22 @@ export async function printOrder(
       if (!printer) throw new Error("Принтер не выбран.");
       const api = await qz();
       if (!api.websocket.isActive()) await api.websocket.connect();
-      const config = api.configs.create(printer, { units: "mm", size: { width: 80 } });
+      const config = api.configs.create(printer, {
+        units: "mm",
+        margins: 0,
+        scaleContent: false,
+        size: { width: 80 },
+      });
       const data = job.type === "customer" ? customerReceipt(order) : kitchenReceipt(order);
-      await api.print(config, [{ type: "pixel", format: "html", flavor: "plain", data }]);
+      await api.print(config, [{
+        type: "pixel",
+        format: "html",
+        flavor: "plain",
+        data,
+        // QZ calculates an HTML document's height automatically when this is
+        // omitted. The explicit width keeps a receipt on 80 mm paper.
+        options: { pageWidth: 80 },
+      }]);
       await onResult(job, "submitted");
     } catch (error) {
       await onResult(job, "failed", error instanceof Error ? error.message : "Ошибка печати");

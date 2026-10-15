@@ -8,11 +8,14 @@ import { getPrintStationId, isPrintStationEnabled, printOrder, printStationEvent
 type NextJobResponse = { data: CreatedOrder | null };
 
 export function PrintStation() {
-  const [enabled, setEnabled] = useState(() => typeof window !== "undefined" && isPrintStationEnabled());
+  // The first browser render must match the server render. The persisted
+  // station setting is only available after this component mounts.
+  const [enabled, setEnabled] = useState(false);
   const [status, setStatus] = useState<"idle" | "printing" | "error">("idle");
 
   useEffect(() => {
     const refresh = () => setEnabled(isPrintStationEnabled());
+    refresh();
     window.addEventListener(printStationEvent, refresh);
     window.addEventListener("storage", refresh);
     return () => { window.removeEventListener(printStationEvent, refresh); window.removeEventListener("storage", refresh); };

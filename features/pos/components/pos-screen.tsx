@@ -9,12 +9,15 @@ import type {
   ActiveOrder,
   ActiveOrderSummary,
 } from "@/features/orders/server/active-orders";
+import { readPosCache, type CachedPosOrder, writePosCache } from "@/features/pos/local-pos-cache";
+import { getPrintStationId, printCustomerReceiptSnapshot, printOrder } from "@/features/printing/qz-client";
 import { TableGrid } from "@/features/tables/components/table-grid";
 
 type MenuResponse = { data: MenuCatalog };
-type ActiveOrdersResponse = { data: ActiveOrderSummary[] };
+type ActiveOrdersResponse = { data: ActiveOrder[] };
 type ActiveOrderResponse = { data: ActiveOrder };
 type PrintableResponse = { data: CreatedOrder };
+type ClaimResponse = { data: boolean };
 type TableMapResponse = {
   data: { cells: number[]; rows: number; columns: number };
 };
@@ -25,7 +28,6 @@ type SelectedMenuItem = MenuItem & {
 };
 const menuCacheKey = "cafeline:pos-menu:v1";
 const menuRevisionKey = "cafeline:menu-revision";
-const localCartKeyPrefix = "cafeline:local-cart:";
 const menuCacheLifetimeMs = 60_000;
 const variantButtonStyles = [
   "bg-amber-50 text-amber-950 hover:bg-amber-100",
@@ -37,7 +39,9 @@ const variantButtonStyles = [
 export function PosScreen() {
   const [catalog, setCatalog] = useState<MenuCatalog | null>(null);
   const [orders, setOrders] = useState<ActiveOrderSummary[]>([]);
-  const [active, setActive] = useState<ActiveOrder | null>(null);
+  const [active, setActive] = useState<CachedPosOrder | null>(null);
+  const [cachedOrders, setCachedOrders] = useState<Record<string, CachedPosOrder>>({});
+  const [cacheReady, setCacheReady] = useState(false);
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +49,9 @@ export function PosScreen() {
   const [isCreating, setIsCreating] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [showTables, setShowTables] = useState(false);
+  const [showKitchenRepeatConfirm, setShowKitchenRepeatConfirm] = useState(false);
+  const [showUnknownPurchase, setShowUnknownPurchase] = useState(false);
+  const [unknownPurchaseAmount, setUnknownPurchaseAmount] = useState("");
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
   const [tableMap, setTableMap] = useState({
     cells: Array.from({ length: 12 }, (_, index) => index),
@@ -52,11 +59,38 @@ export function PosScreen() {
     columns: 8,
   });
   const activeOrderRevision = useRef(0);
-  const activeOrderRef = useRef<ActiveOrder | null>(null);
+  const activeOrderRef = useRef<CachedPosOrder | null>(null);
+  const cachedOrdersRef = useRef<Record<string, CachedPosOrder>>({});
+  const completingOrderIds = useRef(new Set<string>());
 
   useEffect(() => {
     activeOrderRef.current = active;
   }, [active]);
+
+  useEffect(() => {
+    cachedOrdersRef.current = cachedOrders;
+  }, [cachedOrders]);
+
+  useEffect(() => {
+    void readPosCache().then((cache) => {
+      if (!cache) return;
+      const restored = Object.fromEntries(cache.orders.map((order) => [order.id, order]));
+      cachedOrdersRef.current = restored;
+      setCachedOrders(restored);
+      setOrders(cache.summaries);
+      const selected = cache.activeOrderId ? restored[cache.activeOrderId] : cache.orders[0];
+      if (selected) {
+        activeOrderRef.current = selected;
+        setActive(selected);
+      }
+    }).finally(() => setCacheReady(true));
+  }, []);
+
+  useEffect(() => {
+    const cached = Object.values(cachedOrders);
+    if (cached.length === 0) return;
+    void writePosCache({ version: 1, activeOrderId: active?.id ?? null, orders: cached, summaries: orders, savedAt: Date.now() });
+  }, [active?.id, cachedOrders, orders]);
 
   const loadOrder = useCallback(
     async (id: string, revision = activeOrderRevision.current) => {
@@ -67,19 +101,18 @@ export function PosScreen() {
       if (!response.ok || !isActiveOrderResponse(payload))
         throw new Error(message(payload, "Не удалось загрузить заказ."));
       if (revision !== activeOrderRevision.current) return;
-      if (payload.data.items.length > 0) removeLocalCart(id);
-      const localCart =
-        payload.data.items.length === 0 ? readLocalCart(id) : null;
-      const order = localCart
-        ? {
-            ...payload.data,
-            items: localCart,
-            totalTyiyn: localCart.reduce(
-              (total, item) => total + item.lineTotalTyiyn,
-              0,
-            ),
-          }
-        : payload.data;
+      const existing = cachedOrdersRef.current[id];
+      const order: CachedPosOrder = {
+        ...payload.data,
+        items: existing?.items.length && payload.data.items.length === 0 ? existing.items : payload.data.items,
+        totalTyiyn: existing?.items.length && payload.data.items.length === 0 ? existing.totalTyiyn : payload.data.totalTyiyn,
+        customerReceiptPrintedAt: existing?.customerReceiptPrintedAt,
+        pendingCompletion: existing?.pendingCompletion,
+        completionSyncError: existing?.completionSyncError,
+        syncState: "synced",
+      };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [order.id]: order };
+      setCachedOrders(cachedOrdersRef.current);
       setActive(order);
       activeOrderRef.current = order;
     },
@@ -95,15 +128,42 @@ export function PosScreen() {
           message(payload, "Не удалось загрузить активные заказы."),
         );
       if (revision !== activeOrderRevision.current) return;
-      setOrders(payload.data);
+      const incoming = payload.data.map((order) => {
+        const cached = cachedOrdersRef.current[order.id];
+        const hasLocalCart = Boolean(cached?.items.length && order.items.length === 0);
+        return {
+          ...order,
+          items: hasLocalCart ? cached.items : order.items,
+          totalTyiyn: hasLocalCart ? cached.totalTyiyn : order.totalTyiyn,
+          hasKitchenTicket: cached?.hasKitchenTicket || order.hasKitchenTicket,
+          customerReceiptPrintedAt: cached?.customerReceiptPrintedAt,
+          pendingCompletion: cached?.pendingCompletion,
+          completionSyncError: cached?.completionSyncError,
+          syncState: "synced" as const,
+        };
+      });
+      const localOnly = Object.values(cachedOrdersRef.current).filter((order) => order.syncState !== "synced");
+      const nextOrders = [...incoming, ...localOnly];
+      const nextCache = Object.fromEntries(nextOrders.map((order) => [order.id, order]));
+      cachedOrdersRef.current = nextCache;
+      setCachedOrders(nextCache);
+      setOrders(nextOrders.map(toActiveOrderSummary));
       const id =
-        preferredId && payload.data.some((order) => order.id === preferredId)
+        preferredId && nextCache[preferredId]
           ? preferredId
-          : payload.data[0]?.id;
-      if (id) await loadOrder(id, revision);
+          : activeOrderRef.current?.id && nextCache[activeOrderRef.current.id]
+            ? activeOrderRef.current.id
+            : nextOrders[0]?.id;
+      if (id) {
+        const order = nextCache[id];
+        if (order && revision === activeOrderRevision.current) {
+          activeOrderRef.current = order;
+          setActive(order);
+        }
+      }
       else setActive(null);
     },
-    [loadOrder],
+    [],
   );
   const loadMenu = useCallback(async (showCached = false) => {
     if (showCached) {
@@ -127,6 +187,7 @@ export function PosScreen() {
     setTableMap(payload.data);
   }, []);
   useEffect(() => {
+    if (!cacheReady) return;
     const timer = window.setTimeout(
       () =>
         void Promise.all([loadMenu(true), loadOrders(), loadTableMap()]).catch(
@@ -140,7 +201,7 @@ export function PosScreen() {
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [loadMenu, loadOrders, loadTableMap]);
+  }, [cacheReady, loadMenu, loadOrders, loadTableMap]);
   useEffect(() => {
     const timer = window.setInterval(
       () => void loadOrders(active?.id).catch(() => undefined),
@@ -167,7 +228,6 @@ export function PosScreen() {
     const timer = window.setTimeout(() => setError(null), 6_000);
     return () => window.clearTimeout(timer);
   }, [error]);
-
   const menuItems = useMemo(() => {
     if (!catalog) return [];
     const term = query.trim().toLocaleLowerCase("ru-RU");
@@ -187,11 +247,212 @@ export function PosScreen() {
       ),
     [orders],
   );
-  async function createOrder() {
+  const syncLocalOrder = useCallback(async (draft: CachedPosOrder) => {
+    if (draft.syncState === "synced") return draft;
+    const syncing = { ...draft, syncState: "syncing" as const, syncError: undefined };
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [draft.id]: syncing };
+    setCachedOrders(cachedOrdersRef.current);
+    try {
+      const response = await fetch("/api/active-orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: draft.syncKey, tableNumber: draft.tableNumber }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isActiveOrderResponse(payload)) throw new Error(message(payload, "Не удалось синхронизировать заказ."));
+      const synced: CachedPosOrder = {
+        ...payload.data,
+        items: (cachedOrdersRef.current[draft.id] ?? draft).items,
+        totalTyiyn: (cachedOrdersRef.current[draft.id] ?? draft).totalTyiyn,
+        tableNumber: (cachedOrdersRef.current[draft.id] ?? draft).tableNumber,
+        hasKitchenTicket: (cachedOrdersRef.current[draft.id] ?? draft).hasKitchenTicket,
+        customerReceiptPrintedAt: (cachedOrdersRef.current[draft.id] ?? draft).customerReceiptPrintedAt,
+        pendingCompletion: (cachedOrdersRef.current[draft.id] ?? draft).pendingCompletion,
+        completionSyncError: (cachedOrdersRef.current[draft.id] ?? draft).completionSyncError,
+        syncState: "synced",
+        pendingTableNumber: payload.data.tableNumber === (cachedOrdersRef.current[draft.id] ?? draft).tableNumber
+          ? undefined
+          : (cachedOrdersRef.current[draft.id] ?? draft).tableNumber,
+      };
+      const nextCache = { ...cachedOrdersRef.current };
+      delete nextCache[draft.id];
+      nextCache[synced.id] = synced;
+      cachedOrdersRef.current = nextCache;
+      setCachedOrders(nextCache);
+      setOrders((current) => [toActiveOrderSummary(synced), ...current.filter((order) => order.id !== draft.id && order.id !== synced.id)]);
+      if (activeOrderRef.current?.id === draft.id) {
+        activeOrderRef.current = synced;
+        setActive(synced);
+      }
+      return synced;
+    } catch (cause) {
+      const failed = { ...draft, syncState: "sync-error" as const, syncError: cause instanceof Error ? cause.message : "Не удалось синхронизировать заказ." };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [draft.id]: failed };
+      setCachedOrders(cachedOrdersRef.current);
+      if (activeOrderRef.current?.id === draft.id) {
+        activeOrderRef.current = failed;
+        setActive(failed);
+      }
+      throw cause;
+    }
+  }, []);
+  const syncTableAssignment = useCallback(async (order: CachedPosOrder) => {
+    if ((order.syncState !== "synced" && order.syncState !== "sync-error") || order.pendingTableNumber === undefined) return order;
+    let rejectWithoutRetry = false;
+    try {
+      const response = await fetch(`/api/active-orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "move-table", tableNumber: order.pendingTableNumber }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isActiveOrderResponse(payload)) {
+        rejectWithoutRetry = response.status >= 400 && response.status < 500;
+        throw new Error(message(payload, "Не удалось назначить стол."));
+      }
+      const current = cachedOrdersRef.current[order.id] ?? order;
+      const synced: CachedPosOrder = {
+        ...payload.data,
+        items: current.items,
+        totalTyiyn: current.totalTyiyn,
+        hasKitchenTicket: current.hasKitchenTicket,
+        customerReceiptPrintedAt: current.customerReceiptPrintedAt,
+        pendingCompletion: current.pendingCompletion,
+        completionSyncError: current.completionSyncError,
+        syncState: "synced",
+        pendingTableNumber: current.pendingTableNumber === payload.data.tableNumber ? undefined : current.pendingTableNumber,
+      };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [synced.id]: synced };
+      setCachedOrders(cachedOrdersRef.current);
+      setOrders((currentOrders) => currentOrders.map((summary) => summary.id === synced.id ? toActiveOrderSummary(synced) : summary));
+      if (activeOrderRef.current?.id === synced.id) {
+        activeOrderRef.current = synced;
+        setActive(synced);
+      }
+      return synced;
+    } catch (cause) {
+      const syncError = cause instanceof Error ? cause.message : "Не удалось назначить стол.";
+      if (rejectWithoutRetry) {
+        // A validation/conflict error will not succeed on a background retry.
+        // Reload the canonical server state and wait for the cashier to choose
+        // another table instead of producing a PATCH request every 5 seconds.
+        try {
+          await loadOrders(activeOrderRef.current?.id ?? null);
+        } catch {
+          const rejected = {
+            ...(cachedOrdersRef.current[order.id] ?? order),
+            pendingTableNumber: undefined,
+            syncState: "synced" as const,
+          };
+          cachedOrdersRef.current = { ...cachedOrdersRef.current, [rejected.id]: rejected };
+          setCachedOrders(cachedOrdersRef.current);
+          if (activeOrderRef.current?.id === rejected.id) {
+            activeOrderRef.current = rejected;
+            setActive(rejected);
+          }
+        }
+        setError(syncError);
+        return cachedOrdersRef.current[order.id] ?? order;
+      }
+      const failed = { ...(cachedOrdersRef.current[order.id] ?? order), syncState: "sync-error" as const, syncError: cause instanceof Error ? cause.message : "Не удалось назначить стол." };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [failed.id]: failed };
+      setCachedOrders(cachedOrdersRef.current);
+      if (activeOrderRef.current?.id === failed.id) {
+        activeOrderRef.current = failed;
+        setActive(failed);
+      }
+      throw cause;
+    }
+  }, [loadOrders]);
+  const completePrintedOrder = useCallback(async (draft: CachedPosOrder) => {
+    if (!draft.pendingCompletion || !draft.customerReceiptPrintedAt) return false;
+    if (completingOrderIds.current.has(draft.id)) return false;
+    completingOrderIds.current.add(draft.id);
+    let order = draft;
+    try {
+      if (order.syncState !== "synced") order = await syncLocalOrder(order);
+      const response = await fetch(`/api/active-orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "complete-local-cart",
+          customerReceiptPrinted: true,
+          items: order.items.map((item) => ({
+            menuItemId: item.menuItemId,
+            menuItemVariantId: item.menuItemVariantId,
+            quantity: item.quantity,
+            ...(item.menuItemId === null ? { adHocAmountTyiyn: item.unitPriceTyiyn } : {}),
+          })),
+        }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isPrintableResponse(payload))
+        throw new Error(message(payload, "Не удалось синхронизировать завершённый заказ."));
+      const remaining = { ...cachedOrdersRef.current };
+      delete remaining[draft.id];
+      delete remaining[order.id];
+      cachedOrdersRef.current = remaining;
+      setCachedOrders(remaining);
+      setOrders((current) => current.filter((summary) => summary.id !== draft.id && summary.id !== order.id));
+      if (activeOrderRef.current?.id === draft.id || activeOrderRef.current?.id === order.id) {
+        activeOrderRef.current = null;
+        setActive(null);
+      }
+      await loadOrders(null);
+      setNotice("Заказ синхронизирован с сервером.");
+      setError(null);
+      return true;
+    } catch (cause) {
+      const current = cachedOrdersRef.current[order.id] ?? cachedOrdersRef.current[draft.id] ?? order;
+      const failed: CachedPosOrder = {
+        ...current,
+        pendingCompletion: true,
+        customerReceiptPrintedAt: draft.customerReceiptPrintedAt,
+        completionSyncError: cause instanceof Error ? cause.message : "Не удалось синхронизировать завершённый заказ.",
+      };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [failed.id]: failed };
+      setCachedOrders(cachedOrdersRef.current);
+      if (activeOrderRef.current?.id === draft.id || activeOrderRef.current?.id === failed.id) {
+        activeOrderRef.current = failed;
+        setActive(failed);
+      }
+      throw cause;
+    } finally {
+      completingOrderIds.current.delete(draft.id);
+    }
+  }, [loadOrders, syncLocalOrder]);
+  useEffect(() => {
+    const synchronizePendingOrders = () => {
+      for (const order of Object.values(cachedOrdersRef.current)) {
+        if (order.pendingCompletion && order.customerReceiptPrintedAt) {
+          void completePrintedOrder(order).catch(() => undefined);
+          continue;
+        }
+        if (order.pendingTableNumber !== undefined && !order.syncKey) {
+          void syncTableAssignment(order).catch(() => undefined);
+          continue;
+        }
+        if (order.syncState === "local" || order.syncState === "sync-error") {
+          void syncLocalOrder(order).catch(() => undefined);
+          continue;
+        }
+        if (order.syncState === "synced" && order.pendingTableNumber !== undefined)
+          void syncTableAssignment(order).catch(() => undefined);
+      }
+    };
+    synchronizePendingOrders();
+    const timer = window.setInterval(synchronizePendingOrders, 5_000);
+    window.addEventListener("online", synchronizePendingOrders);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("online", synchronizePendingOrders);
+    };
+  }, [completePrintedOrder, syncLocalOrder, syncTableAssignment]);
+  const createOrder = useCallback(async () => {
     if (isCreating) return;
     activeOrderRevision.current += 1;
     const localOrderId = `local-order-${crypto.randomUUID()}`;
-    const localOrder: ActiveOrder = {
+    const localOrder: CachedPosOrder = {
       id: localOrderId,
       orderNumber: 0,
       tableNumber: null,
@@ -199,64 +460,50 @@ export function PosScreen() {
       cashierName: "",
       createdAt: new Date().toISOString(),
       items: [],
+      hasKitchenTicket: false,
+      syncState: "local",
+      syncKey: crypto.randomUUID(),
     };
     activeOrderRef.current = localOrder;
     setActive(localOrder);
     setOrders((current) => [toActiveOrderSummary(localOrder), ...current]);
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [localOrder.id]: localOrder };
+    setCachedOrders(cachedOrdersRef.current);
     setIsCreating(true);
     setNotice(null);
     setShowTables(false);
-    try {
-      const response = await fetch("/api/active-orders", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok || !isActiveOrderResponse(payload))
-        throw new Error(message(payload, "Не удалось открыть новый заказ."));
-      const localItems =
-        activeOrderRef.current?.id === localOrderId
-          ? activeOrderRef.current.items
-          : [];
-      const openedOrder = {
-        ...payload.data,
-        items: localItems,
-        totalTyiyn: localItems.reduce(
-          (total, item) => total + item.lineTotalTyiyn,
-          0,
-        ),
-      };
-      activeOrderRef.current = openedOrder;
-      setActive(openedOrder);
-      setOrders((current) => [
-        toActiveOrderSummary(openedOrder),
-        ...current.filter(
-          (order) => order.id !== localOrderId && order.id !== openedOrder.id,
-        ),
-      ]);
-      writeLocalCart(openedOrder);
-      setNotice("Новый заказ открыт.");
-      setError(null);
-    } catch (cause) {
-      if (activeOrderRef.current?.id === localOrderId) {
-        activeOrderRef.current = null;
-        setActive(null);
-        setOrders((current) =>
-          current.filter((order) => order.id !== localOrderId),
-        );
+    setNotice("Новый заказ создан локально.");
+    setError(null);
+    setIsCreating(false);
+    window.setTimeout(() => void syncLocalOrder(localOrder).catch(() => undefined), 750);
+  }, [isCreating, syncLocalOrder]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.code !== "KeyQ" && event.code !== "KeyN") || event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+      if (event.code === "KeyQ") {
+        if (!activeOrderRef.current || isTransitioning) return;
+        event.preventDefault();
+        setShowUnknownPurchase(true);
+        return;
       }
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Не удалось открыть новый заказ.",
-      );
-    } finally {
-      setIsCreating(false);
-    }
-  }
+      if (isTransitioning) return;
+      event.preventDefault();
+      void createOrder();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [createOrder, isTransitioning]);
   async function selectOrder(id: string) {
     if (isTransitioning) return;
+    const cached = cachedOrdersRef.current[id];
+    if (cached) {
+      activeOrderRevision.current += 1;
+      activeOrderRef.current = cached;
+      setActive(cached);
+      return;
+    }
     const revision = ++activeOrderRevision.current;
     setIsTransitioning(true);
     try {
@@ -271,40 +518,82 @@ export function PosScreen() {
     }
   }
   async function assignTable(tableNumber: number) {
-    if (!active || isLocalOrderId(active.id) || isTransitioning) return;
-    activeOrderRevision.current += 1;
-    setIsTransitioning(true);
+    if (!active || active.pendingCompletion || isTransitioning) return;
+    const local: CachedPosOrder = {
+      ...active,
+      tableNumber,
+      pendingTableNumber: tableNumber,
+      syncState: active.syncState === "synced" ? "synced" : active.syncState,
+      syncError: undefined,
+    };
+    activeOrderRef.current = local;
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [local.id]: local };
+    setCachedOrders(cachedOrdersRef.current);
+    setActive(local);
+    setOrders((current) => current.map((order) => order.id === local.id ? toActiveOrderSummary(local) : order));
     setShowTables(false);
-    try {
-      const response = await fetch(`/api/active-orders/${active.id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "move-table", tableNumber }),
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok || !isActiveOrderResponse(payload))
-        throw new Error(message(payload, "Не удалось назначить стол."));
-      await loadOrders(payload.data.id);
-      setNotice(`Заказ назначен на стол ${tableNumber}.`);
-      setError(null);
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Не удалось назначить стол.",
-      );
-    } finally {
-      setIsTransitioning(false);
-    }
+    setNotice(`Стол ${tableNumber} назначен локально.`);
+    if (local.syncState === "synced")
+      void syncTableAssignment(local).catch(() => undefined);
   }
   function addItem(item: MenuItem, variant?: MenuItem["variants"][number]) {
-    if (!active) return;
+    if (!active || active.pendingCompletion) return;
     queueItemChange(active.id, selectMenuItem(item, variant), 1);
   }
+  function addUnknownPurchase() {
+    if (!active || active.pendingCompletion || isTransitioning) return;
+    const amountTyiyn = parseSomAmount(unknownPurchaseAmount);
+    if (!amountTyiyn) {
+      setError("Введите сумму неизвестной покупки.");
+      return;
+    }
+    const unknownItem: ActiveOrder["items"][number] = {
+      id: `unknown-${crypto.randomUUID()}`,
+      menuItemId: null,
+      menuItemVariantId: null,
+      itemName: "Неизвестная покупка",
+      unitPriceTyiyn: amountTyiyn,
+      quantity: 1,
+      sentQuantity: 1,
+      lineTotalTyiyn: amountTyiyn,
+      addedAt: new Date().toISOString(),
+      fulfillmentType: "counter",
+    };
+    setActive((current) => {
+      if (!current) return current;
+      const next = { ...current, items: [unknownItem, ...current.items], totalTyiyn: current.totalTyiyn + amountTyiyn };
+      activeOrderRef.current = next;
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      return next;
+    });
+    setOrders((current) => current.map((order) => order.id === active.id ? { ...order, totalTyiyn: order.totalTyiyn + amountTyiyn } : order));
+    setUnknownPurchaseAmount("");
+    setShowUnknownPurchase(false);
+    setNotice("Неизвестная покупка добавлена в заказ.");
+  }
   function subtractItem(item: ActiveOrder["items"][number]) {
-    if (!active) return;
+    if (!active || active.pendingCompletion) return;
     queueItemChange(active.id, selectOrderItem(item), -1);
   }
   async function removeItem(item: ActiveOrder["items"][number]) {
-    if (!active || isTransitioning) return;
+    if (!active || active.pendingCompletion || isTransitioning) return;
+    if (item.menuItemId === null) {
+      const orderId = active.id;
+      const removeUnknownItem = (order: CachedPosOrder) => ({
+        ...order,
+        items: order.items.filter((candidate) => candidate.id !== item.id),
+        totalTyiyn: Math.max(0, order.totalTyiyn - item.lineTotalTyiyn),
+      });
+      const next = removeUnknownItem(cachedOrdersRef.current[orderId] ?? active);
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [orderId]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      activeOrderRef.current = next;
+      setActive(next);
+      setOrders((current) => current.map((order) => order.id === orderId ? toActiveOrderSummary(next) : order));
+      setNotice("Неизвестная покупка удалена из заказа.");
+      return;
+    }
     queueItemChange(active.id, selectOrderItem(item), -item.quantity);
   }
   function queueItemChange(
@@ -312,29 +601,33 @@ export function PosScreen() {
     item: SelectedMenuItem,
     delta: number,
   ) {
+    if (cachedOrdersRef.current[orderId]?.pendingCompletion) return;
     applyOptimisticItemChange(orderId, item, delta);
   }
   async function printLocalItemsToKitchen(
     items: ActiveOrder["items"],
     successMessage: string,
   ) {
+    const kitchenItems = items.filter((item) => item.menuItemId !== null);
     if (
       !active ||
-      isLocalOrderId(active.id) ||
-      items.length === 0 ||
+      kitchenItems.length === 0 ||
+      active.pendingCompletion ||
       isTransitioning
     )
       return;
     setIsTransitioning(true);
     setNotice(null);
     try {
-      const response = await fetch(`/api/active-orders/${active.id}`, {
+      let order = active;
+      if (order.syncState !== "synced") order = await syncLocalOrder(order);
+      const response = await fetch(`/api/active-orders/${order.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: "print-local-cart-to-kitchen",
           idempotencyKey: crypto.randomUUID(),
-          items: items.map((item) => ({
+          items: kitchenItems.map((item) => ({
             menuItemId: item.menuItemId,
             menuItemVariantId: item.menuItemVariantId,
             quantity: item.quantity,
@@ -346,7 +639,13 @@ export function PosScreen() {
         throw new Error(
           message(payload, "Не удалось передать блюда на кухню."),
         );
+      void printCreatedOrderLocally(payload.data);
       setNotice(successMessage);
+      setActive((current) =>
+        current?.id === order.id
+          ? { ...current, hasKitchenTicket: true }
+          : current,
+      );
       setError(null);
     } catch (cause) {
       setError(
@@ -410,7 +709,8 @@ export function PosScreen() {
         totalTyiyn: Math.max(0, current.totalTyiyn + item.priceTyiyn * delta),
       };
       activeOrderRef.current = next;
-      if (!isLocalOrderId(orderId)) writeLocalCart(next);
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
       return next;
     });
     setOrders((current) =>
@@ -430,53 +730,84 @@ export function PosScreen() {
   async function completeOrder() {
     if (
       !active ||
-      isLocalOrderId(active.id) ||
       active.items.length === 0 ||
+      active.pendingCompletion ||
       isTransitioning
     )
       return;
     activeOrderRevision.current += 1;
-    const orderId = active.id;
+    let order = active;
     setIsTransitioning(true);
     setNotice(null);
     try {
-      const response = await fetch(`/api/active-orders/${orderId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "complete-local-cart",
-          items: active.items.map((item) => ({
-            menuItemId: item.menuItemId,
-            menuItemVariantId: item.menuItemVariantId,
-            quantity: item.quantity,
-          })),
-        }),
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok || !isPrintableResponse(payload))
-        throw new Error(message(payload, "Не удалось завершить заказ."));
-      removeLocalCart(orderId);
-      await loadOrders(null);
-      setNotice("Заказ сохранён.");
-      setError(null);
+      if (!order.customerReceiptPrintedAt) {
+        await printCustomerReceiptSnapshot(toLocalCustomerReceipt(order));
+        order = {
+          ...order,
+          customerReceiptPrintedAt: new Date().toISOString(),
+        };
+      }
+      order = { ...order, pendingCompletion: true, completionSyncError: undefined };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [order.id]: order };
+      setCachedOrders(cachedOrdersRef.current);
+      activeOrderRef.current = order;
+      setActive(order);
+      const completed = await completePrintedOrder(order);
+      if (!completed) return;
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Не удалось завершить заказ.",
+        cause instanceof Error
+          ? `Чек уже напечатан. ${cause.message}`
+          : "Чек уже напечатан. Заказ сохранён на устройстве и будет синхронизирован автоматически.",
       );
     } finally {
       setIsTransitioning(false);
     }
   }
+  async function printCreatedOrderLocally(order: CreatedOrder) {
+    const job = order.printJobs[0];
+    if (!job) return;
+    const stationId = getPrintStationId();
+    try {
+      const response = await fetch(`/api/print-jobs/${job.id}/claim`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ stationId }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isClaimResponse(payload) || !payload.data) return;
+      await printOrder(order, async (printJob, status, lastError) => {
+        const report = await fetch(`/api/print-jobs/${printJob.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status, lastError: lastError ?? null, stationId }),
+        });
+        if (!report.ok) throw new Error("Не удалось сохранить результат печати.");
+      }, job.type, job.id);
+    } catch {
+      // The claimed job remains available for the configured fallback station
+      // once its short processing lease expires.
+    }
+  }
   async function deleteEmptyOrder() {
     if (
       !active ||
-      isLocalOrderId(active.id) ||
       active.items.length > 0 ||
+      active.pendingCompletion ||
       isTransitioning
     )
       return;
-    if (!window.confirm("Удалить пустой заказ?")) return;
     const orderId = active.id;
+    if (active.syncState !== "synced") {
+      const remaining = { ...cachedOrdersRef.current };
+      delete remaining[orderId];
+      cachedOrdersRef.current = remaining;
+      setCachedOrders(remaining);
+      setOrders((current) => current.filter((order) => order.id !== orderId));
+      setActive(null);
+      setNotice("Локальный заказ удалён.");
+      return;
+    }
     activeOrderRevision.current += 1;
     setIsTransitioning(true);
     setNotice(null);
@@ -489,7 +820,6 @@ export function PosScreen() {
       const payload: unknown = await response.json();
       if (!response.ok)
         throw new Error(message(payload, "Не удалось удалить пустой заказ."));
-      removeLocalCart(orderId);
       await loadOrders(null);
       setNotice("Пустой заказ удалён.");
       setError(null);
@@ -506,20 +836,17 @@ export function PosScreen() {
 
   const itemCount =
     active?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0;
+  const isOrderLocked = isTransitioning || Boolean(active?.pendingCompletion);
+  const orderedOrders = useMemo(
+    () => [...orders].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+    [orders],
+  );
 
   return (
     <div className="space-y-4">
       <section className="flex items-center gap-2 overflow-hidden rounded-2xl border border-white/80 bg-white/90 p-2 shadow-[0_8px_24px_rgba(56,72,65,0.07)] backdrop-blur-xl">
-        <button
-          type="button"
-          onClick={() => void createOrder()}
-          disabled={isCreating}
-          className="shrink-0 rounded-xl bg-primary px-3 py-2.5 text-sm font-bold text-white shadow-[0_6px_14px_rgba(17,170,160,0.18)] disabled:opacity-50"
-        >
-          {isCreating ? "Создаём…" : "+ Новый заказ"}
-        </button>
         <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto py-0.5 pr-0.5">
-          {orders.map((order) => (
+          {orderedOrders.map((order) => (
             <button
               key={order.id}
               type="button"
@@ -533,6 +860,14 @@ export function PosScreen() {
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() => void createOrder()}
+          disabled={isCreating}
+          className="shrink-0 rounded-xl bg-primary px-3 py-2.5 text-sm font-bold text-white shadow-[0_6px_14px_rgba(17,170,160,0.18)] disabled:opacity-50"
+        >
+          {isCreating ? "Создаём…" : "+ Новый заказ"}
+        </button>
       </section>
 
       <div className="pointer-events-none fixed right-4 top-4 z-50 grid w-[min(24rem,calc(100vw-2rem))] gap-2">
@@ -681,7 +1016,7 @@ export function PosScreen() {
               <button
                 type="button"
                 onClick={() => setShowTables((value) => !value)}
-                disabled={!active || isTransitioning}
+                disabled={!active || isOrderLocked}
                 className="flex items-center gap-2 text-left text-xl font-bold tracking-[-0.04em] text-slate-950 disabled:opacity-50"
               >
                 {active ? activeTitle(active) : "Активный заказ"}
@@ -689,10 +1024,28 @@ export function PosScreen() {
               </button>
               {active && (
                 <p className="mt-1 text-sm text-slate-500">
-                  {isLocalOrderId(active.id)
-                    ? "Создаём заказ…"
-                    : `Заказ №${active.orderNumber} · открыт`}
+                  {active.pendingCompletion
+                    ? `Чек напечатан · ожидает синхронизации${active.completionSyncError ? `: ${active.completionSyncError}` : ""}`
+                    : active.syncState === "local"
+                    ? "Сохранён на устройстве"
+                    : active.syncState === "syncing"
+                      ? "Синхронизация…"
+                      : active.syncState === "sync-error"
+                        ? `Не синхронизировано: ${active.syncError ?? "повторим автоматически"}`
+                        : `Заказ №${active.orderNumber} · открыт`}
                 </p>
+              )}
+              {active && (
+                <button
+                  type="button"
+                  onClick={() => setShowUnknownPurchase(true)}
+                  disabled={isOrderLocked}
+                  className="absolute right-0 top-0 grid size-10 place-items-center rounded-xl bg-amber-400 text-2xl font-bold text-amber-950 shadow-sm hover:bg-amber-500 disabled:opacity-40"
+                  aria-label="Добавить неизвестную покупку"
+                  title="Неизвестная покупка (Q)"
+                >
+                  +
+                </button>
               )}
               {showTables && (
                 <TableMap
@@ -718,10 +1071,11 @@ export function PosScreen() {
                       <OrderCard
                         key={item.id}
                         item={item}
-                        disabled={isTransitioning || isLocalOrderId(active.id)}
-                        onDecrease={() => subtractItem(item)}
+                        disabled={isOrderLocked}
+                        canChangeQuantity={item.menuItemId !== null}
+                        onDecrease={() => { if (item.menuItemId) subtractItem(item); }}
                         onIncrease={() => {
-                          if (active)
+                          if (active && item.menuItemId)
                             queueItemChange(
                               active.id,
                               selectOrderItem(item),
@@ -729,12 +1083,11 @@ export function PosScreen() {
                             );
                         }}
                         onRemove={() => void removeItem(item)}
-                        onSend={() =>
+                        onSend={item.menuItemId ? () =>
                           void printLocalItemsToKitchen(
                             [item],
                             `${item.itemName} передано на печатную станцию. Корзина не изменена.`,
-                          )
-                        }
+                          ) : undefined}
                       />
                     ))
                   )}
@@ -751,26 +1104,32 @@ export function PosScreen() {
                     </strong>
                   </div>
                 </div>
-                {active.items.length > 0 && (
+                {active.items.some((item) => item.menuItemId !== null) && (
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      if (active.hasKitchenTicket) {
+                        setShowKitchenRepeatConfirm(true);
+                        return;
+                      }
                       void printLocalItemsToKitchen(
                         active.items,
                         "Блюда переданы на печатную станцию. Корзина не изменена.",
-                      )
-                    }
-                    disabled={isTransitioning || isLocalOrderId(active.id)}
-                    className="mt-4 w-full rounded-2xl border border-primary bg-teal-50 px-4 py-3 text-sm font-bold text-primary-strong hover:bg-teal-100 disabled:opacity-40"
+                      );
+                    }}
+                    disabled={isOrderLocked}
+                    className={`mt-4 w-full rounded-2xl border px-4 py-3 text-sm font-bold disabled:opacity-40 ${active.hasKitchenTicket ? "border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200" : "border-primary bg-teal-50 text-primary-strong hover:bg-teal-100"}`}
                   >
-                    Отправить всё на кухню
+                    {active.hasKitchenTicket
+                      ? "Уже отправлено на кухню"
+                      : "Отправить всё на кухню"}
                   </button>
                 )}
                 {active.items.length === 0 ? (
                   <button
                     type="button"
                     onClick={() => void deleteEmptyOrder()}
-                    disabled={isTransitioning || isLocalOrderId(active.id)}
+                    disabled={isOrderLocked}
                     className="mt-4 w-full rounded-2xl bg-red-500 px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(239,68,68,0.2)] hover:bg-red-600 disabled:opacity-40"
                   >
                     Удалить заказ
@@ -779,7 +1138,7 @@ export function PosScreen() {
                   <button
                     type="button"
                     onClick={() => void completeOrder()}
-                    disabled={isTransitioning || isLocalOrderId(active.id)}
+                    disabled={isOrderLocked}
                     className="mt-4 w-full rounded-2xl bg-primary px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(17,170,160,0.2)] disabled:opacity-40"
                   >
                     Завершить заказ
@@ -790,6 +1149,78 @@ export function PosScreen() {
           </div>
         </aside>
       </div>
+      {showKitchenRepeatConfirm && active && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="repeat-kitchen-print-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="repeat-kitchen-print-title" className="text-lg font-bold text-slate-950">
+              Отправить на кухню повторно?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Этот заказ уже был отправлен на кухню. Подтвердите повторную печать, чтобы кухня не получила дубликат по ошибке.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowKitchenRepeatConfirm(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowKitchenRepeatConfirm(false);
+                  void printLocalItemsToKitchen(
+                    active.items,
+                    "Блюда повторно переданы на печатную станцию. Корзина не изменена.",
+                  );
+                }}
+                className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500"
+              >
+                Отправить повторно
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showUnknownPurchase && active && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="unknown-purchase-title">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              addUnknownPurchase();
+            }}
+            className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl"
+          >
+            <h2 id="unknown-purchase-title" className="text-lg font-bold text-slate-950">Неизвестная покупка</h2>
+            <p className="mt-2 text-sm text-slate-600">Введите сумму в сомах. Эта позиция попадёт в клиентский чек, но не будет отправлена на кухню.</p>
+            <label className="mt-5 block text-sm font-semibold text-slate-700">
+              Сумма
+              <input
+                autoFocus
+                inputMode="numeric"
+                value={unknownPurchaseAmount}
+                onChange={(event) => {
+                  const amount = event.target.value;
+                  if (/^\d*$/.test(amount)) setUnknownPurchaseAmount(amount);
+                }}
+                pattern="[0-9]*"
+                placeholder="Например, 250"
+                className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-lg font-semibold outline-none focus:border-primary"
+              />
+            </label>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => { setShowUnknownPurchase(false); setUnknownPurchaseAmount(""); }} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Отмена</button>
+              <button className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500">Добавить</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
@@ -797,15 +1228,17 @@ export function PosScreen() {
 type OrderCardProps = {
   item: ActiveOrder["items"][number];
   disabled: boolean;
+  canChangeQuantity: boolean;
   onDecrease: () => void;
   onIncrease: () => void;
   onRemove: () => void;
-  onSend: () => void;
+  onSend?: () => void;
 };
 
 function OrderCard({
   item,
   disabled,
+  canChangeQuantity,
   onDecrease,
   onIncrease,
   onRemove,
@@ -813,7 +1246,7 @@ function OrderCard({
 }: OrderCardProps) {
   return (
     <li className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 rounded-xl border border-slate-200 bg-white p-3 pr-16 sm:grid-cols-[minmax(0,1.4fr)_auto_minmax(8rem,auto)_auto]">
-      <button
+      {onSend && <button
         type="button"
         onClick={onSend}
         disabled={disabled}
@@ -822,7 +1255,7 @@ function OrderCard({
         className="absolute right-9 top-2 grid size-6 place-items-center rounded-md border border-primary/25 bg-teal-50 text-sm font-bold text-primary-strong hover:bg-teal-100 disabled:opacity-40"
       >
         ↗
-      </button>
+      </button>}
       <button
         type="button"
         onClick={onRemove}
@@ -851,7 +1284,7 @@ function OrderCard({
           <div className="flex shrink-0 overflow-hidden rounded-xl border border-slate-200">
             <QuantityButton
               label={`Уменьшить ${item.itemName}`}
-              disabled={disabled}
+              disabled={disabled || !canChangeQuantity}
               onClick={onDecrease}
             >
               −
@@ -861,7 +1294,7 @@ function OrderCard({
             </span>
             <QuantityButton
               label={`Увеличить ${item.itemName}`}
-              disabled={disabled}
+              disabled={disabled || !canChangeQuantity}
               onClick={onIncrease}
             >
               +
@@ -988,13 +1421,29 @@ function Toast({
   );
 }
 function orderTitle(order: ActiveOrderSummary) {
-  return order.tableNumber ? `Стол ${order.tableNumber}` : "Новый заказ";
+  return order.orderNumber > 0 ? `Заказ №${order.orderNumber}` : "Новый заказ";
 }
 function activeTitle(order: ActiveOrder) {
   return order.tableNumber ? `Стол ${order.tableNumber}` : "Новый заказ";
 }
-function isLocalOrderId(id: string) {
-  return id.startsWith("local-order-");
+function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
+  return {
+    id: order.id,
+    orderNumber: order.orderNumber,
+    tableNumber: order.tableNumber,
+    totalTyiyn: order.totalTyiyn,
+    cashierName: order.cashierName,
+    createdAt: order.createdAt,
+    items: order.items.map((item) => ({
+      menuItemId: item.menuItemId,
+      itemName: item.itemName,
+      unitPriceTyiyn: item.unitPriceTyiyn,
+      quantity: item.quantity,
+      lineTotalTyiyn: item.lineTotalTyiyn,
+    })),
+    printJobs: [],
+    created: false,
+  };
 }
 function selectMenuItem(
   item: MenuItem,
@@ -1008,6 +1457,7 @@ function selectMenuItem(
   };
 }
 function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
+  if (!item.menuItemId) throw new Error("У неизвестной покупки нельзя менять количество.");
   return {
     id: item.menuItemId,
     categoryId: "",
@@ -1036,6 +1486,12 @@ function formatOrderTime(value: string) {
     minute: "2-digit",
     timeZone: "Asia/Bishkek",
   }).format(new Date(value));
+}
+function parseSomAmount(value: string) {
+  const normalized = value.trim().replace(",", ".");
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const amount = Math.round(Number(normalized) * 100);
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= 100_000_000 ? amount : null;
 }
 function readCachedMenu(): MenuCatalog | null {
   try {
@@ -1074,34 +1530,6 @@ function readMenuRevision() {
     return "initial";
   }
 }
-function readLocalCart(orderId: string): ActiveOrder["items"] | null {
-  try {
-    const value: unknown = JSON.parse(
-      window.localStorage.getItem(`${localCartKeyPrefix}${orderId}`) ?? "null",
-    );
-    return Array.isArray(value) ? (value as ActiveOrder["items"]) : null;
-  } catch {
-    return null;
-  }
-}
-function writeLocalCart(order: ActiveOrder) {
-  if (isLocalOrderId(order.id)) return;
-  try {
-    window.localStorage.setItem(
-      `${localCartKeyPrefix}${order.id}`,
-      JSON.stringify(order.items),
-    );
-  } catch {
-    /* The cart remains available in memory. */
-  }
-}
-function removeLocalCart(orderId: string) {
-  try {
-    window.localStorage.removeItem(`${localCartKeyPrefix}${orderId}`);
-  } catch {
-    /* Storage can be disabled. */
-  }
-}
 function isMenuResponse(value: unknown): value is MenuResponse {
   return Boolean(value && typeof value === "object" && "data" in value);
 }
@@ -1132,6 +1560,9 @@ function isPrintableResponse(value: unknown): value is PrintableResponse {
     typeof value.data === "object" &&
     "printJobs" in value.data,
   );
+}
+function isClaimResponse(value: unknown): value is ClaimResponse {
+  return Boolean(value && typeof value === "object" && "data" in value && typeof value.data === "boolean");
 }
 function isTableMapResponse(value: unknown): value is TableMapResponse {
   return Boolean(

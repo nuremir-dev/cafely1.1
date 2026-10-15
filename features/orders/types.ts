@@ -1,5 +1,5 @@
 export type OrderItemSnapshot = {
-  menuItemId: string;
+  menuItemId: string | null;
   itemName: string;
   unitPriceTyiyn: number;
   quantity: number;

@@ -1,11 +1,11 @@
 import { requireApiSession } from "@/features/auth/guards";
-import { listActiveOrders, openActiveOrder } from "@/features/orders/server/active-orders";
+import { listActiveOrderDetails, openActiveOrder } from "@/features/orders/server/active-orders";
 import { ApiError, errorResponse } from "@/lib/http/api-error";
 
 export async function GET() {
   try {
     await requireApiSession();
-    return Response.json({ data: await listActiveOrders() });
+    return Response.json({ data: await listActiveOrderDetails() });
   } catch (error) {
     if (error instanceof ApiError) return errorResponse(error);
     console.error("Unable to load active orders", error);
