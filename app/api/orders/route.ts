@@ -1,5 +1,6 @@
 import { requireApiSession } from "@/features/auth/guards";
 import { getOrderHistory } from "@/features/history/server/order-history";
+import { clearOrderHistory } from "@/features/history/server/manage-history";
 import { createOrder } from "@/features/orders/server/create-order";
 import { ApiError, errorResponse } from "@/lib/http/api-error";
 
@@ -29,5 +30,16 @@ export async function GET(request: Request) {
     if (error instanceof ApiError) return errorResponse(error);
     console.error("Unable to load order history", error);
     return errorResponse(new ApiError("INTERNAL_ERROR", 500, "Не удалось загрузить историю продаж."));
+  }
+}
+
+export async function DELETE() {
+  try {
+    await requireApiSession();
+    return Response.json({ data: { deletedCount: await clearOrderHistory() } });
+  } catch (error) {
+    if (error instanceof ApiError) return errorResponse(error);
+    console.error("Unable to clear order history", error);
+    return errorResponse(new ApiError("INTERNAL_ERROR", 500, "Не удалось очистить историю."));
   }
 }

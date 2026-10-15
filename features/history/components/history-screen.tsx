@@ -17,6 +17,8 @@ export function HistoryScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadPage = useCallback(async (cursor: string | null, append: boolean) => {
@@ -67,12 +69,53 @@ export function HistoryScreen() {
     }, job.type, job.id);
   }
 
+  async function cancelOrder(id: string) {
+    setCancellingOrderId(id);
+    try {
+      const response = await fetch(`/api/orders/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "cancel" }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) throw new Error(readErrorMessage(payload));
+      setOrders((current) => current.filter((order) => order.id !== id));
+      if (selectedOrder?.id === id) setSelectedOrder(null);
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Не удалось отменить заказ.");
+    } finally {
+      setCancellingOrderId(null);
+    }
+  }
+
+  async function clearHistory() {
+    if (!window.confirm("Удалить всю историю заказов без возможности восстановления?")) return;
+    setIsClearing(true);
+    try {
+      const response = await fetch("/api/orders", { method: "DELETE" });
+      const payload: unknown = await response.json();
+      if (!response.ok) throw new Error(readErrorMessage(payload));
+      setOrders([]);
+      setNextCursor(null);
+      setSelectedOrder(null);
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Не удалось очистить историю.");
+    } finally {
+      setIsClearing(false);
+    }
+  }
+
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_27rem]">
       <section aria-labelledby="history-title">
-        <header className="mb-5">
-          <h1 id="history-title" className="text-2xl font-bold tracking-tight">История продаж</h1>
-          <p className="mt-1 text-sm text-slate-600">Завершённые заказы: новые сверху.</p>
+        <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 id="history-title" className="text-2xl font-bold tracking-tight">История продаж</h1>
+            <p className="mt-1 text-sm text-slate-600">Завершённые заказы: новые сверху.</p>
+          </div>
+          {orders.length > 0 && <button type="button" onClick={() => void clearHistory()} disabled={isClearing} className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">{isClearing ? "Очищаем…" : "Очистить историю"}</button>}
         </header>
         {errorMessage && <p role="alert" className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-700">{errorMessage}</p>}
         {isLoading ? <p className="rounded-xl bg-surface p-5 text-slate-600">Загрузка истории…</p> : (
@@ -81,11 +124,14 @@ export function HistoryScreen() {
               <ul className="overflow-hidden rounded-2xl border border-border bg-surface">
                 {orders.map((order) => (
                   <li key={order.id} className="border-b border-border last:border-0">
-                    <button type="button" onClick={() => void openOrder(order.id)} className="grid w-full gap-2 p-4 text-left hover:bg-surface-muted sm:grid-cols-[7rem_1fr_auto] sm:items-center">
-                      <span className="font-bold">№{order.orderNumber}</span>
-                      <span className="text-sm text-slate-600">{formatDateTime(order.createdAt)} · {order.itemCount} шт. · {order.cashierName}</span>
-                      <span className="font-bold text-primary-strong">{formatSom(order.totalTyiyn)}</span>
-                    </button>
+                    <div className="flex items-center gap-2 p-4">
+                      <button type="button" onClick={() => void openOrder(order.id)} className="grid min-w-0 flex-1 gap-2 text-left hover:text-primary-strong sm:grid-cols-[7rem_1fr_auto] sm:items-center">
+                        <span className="font-bold">№{order.orderNumber}</span>
+                        <span className="text-sm text-slate-600">{formatDateTime(order.createdAt)} · {order.itemCount} шт. · {order.cashierName}</span>
+                        <span className="font-bold text-primary-strong">{formatSom(order.totalTyiyn)}</span>
+                      </button>
+                      <button type="button" onClick={() => void cancelOrder(order.id)} disabled={cancellingOrderId === order.id} className="shrink-0 rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50">{cancellingOrderId === order.id ? "Отмена…" : "Отменить"}</button>
+                    </div>
                   </li>
                 ))}
               </ul>

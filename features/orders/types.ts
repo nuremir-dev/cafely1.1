@@ -1,5 +1,6 @@
 export type OrderItemSnapshot = {
   menuItemId: string | null;
+  serviceLocation?: "hall" | "takeaway";
   itemName: string;
   unitPriceTyiyn: number;
   quantity: number;

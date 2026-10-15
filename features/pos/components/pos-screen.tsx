@@ -24,6 +24,7 @@ type TableMapResponse = {
 type MenuItem = MenuCatalog["categories"][number]["items"][number];
 type SelectedMenuItem = MenuItem & {
   selectedVariantId: string | null;
+  serviceLocation: "hall" | "takeaway";
   displayName: string;
 };
 const menuCacheKey = "cafeline:pos-menu:v1";
@@ -52,7 +53,8 @@ export function PosScreen() {
   const [showKitchenRepeatConfirm, setShowKitchenRepeatConfirm] = useState(false);
   const [showUnknownPurchase, setShowUnknownPurchase] = useState(false);
   const [unknownPurchaseAmount, setUnknownPurchaseAmount] = useState("");
-  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+  const [locationPickerItemId, setLocationPickerItemId] = useState<string | null>(null);
+  const [variantPicker, setVariantPicker] = useState<{ item: MenuItem; serviceLocation: "hall" | "takeaway" } | null>(null);
   const [tableMap, setTableMap] = useState({
     cells: Array.from({ length: 12 }, (_, index) => index),
     rows: 6,
@@ -381,6 +383,7 @@ export function PosScreen() {
             menuItemId: item.menuItemId,
             menuItemVariantId: item.menuItemVariantId,
             quantity: item.quantity,
+            ...(item.menuItemId !== null ? { serviceLocation: item.serviceLocation ?? "hall" } : {}),
             ...(item.menuItemId === null ? { adHocAmountTyiyn: item.unitPriceTyiyn } : {}),
           })),
         }),
@@ -536,9 +539,9 @@ export function PosScreen() {
     if (local.syncState === "synced")
       void syncTableAssignment(local).catch(() => undefined);
   }
-  function addItem(item: MenuItem, variant?: MenuItem["variants"][number]) {
+  function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined, serviceLocation: "hall" | "takeaway") {
     if (!active || active.pendingCompletion) return;
-    queueItemChange(active.id, selectMenuItem(item, variant), 1);
+    queueItemChange(active.id, selectMenuItem(item, variant, serviceLocation), 1);
   }
   function addUnknownPurchase() {
     if (!active || active.pendingCompletion || isTransitioning) return;
@@ -631,6 +634,7 @@ export function PosScreen() {
             menuItemId: item.menuItemId,
             menuItemVariantId: item.menuItemVariantId,
             quantity: item.quantity,
+            serviceLocation: item.serviceLocation ?? "hall",
           })),
         }),
       });
@@ -639,13 +643,24 @@ export function PosScreen() {
         throw new Error(
           message(payload, "Не удалось передать блюда на кухню."),
         );
-      void printCreatedOrderLocally(payload.data);
+      const printed = await printCreatedOrderLocally(payload.data);
+      if (!printed) throw new Error("Блюдо сохранено для кухни, но не удалось напечатать чек.");
       setNotice(successMessage);
-      setActive((current) =>
-        current?.id === order.id
-          ? { ...current, hasKitchenTicket: true }
-          : current,
-      );
+      setActive((current) => {
+        if (current?.id !== order.id) return current;
+        const sentItemIds = new Set(kitchenItems.map((item) => item.id));
+        const next = {
+          ...current,
+          hasKitchenTicket: true,
+          items: current.items.map((item) =>
+            sentItemIds.has(item.id) ? { ...item, sentQuantity: item.quantity } : item,
+          ),
+        };
+        activeOrderRef.current = next;
+        cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+        setCachedOrders(cachedOrdersRef.current);
+        return next;
+      });
       setError(null);
     } catch (cause) {
       setError(
@@ -668,6 +683,7 @@ export function PosScreen() {
         (line) =>
           line.menuItemId === item.id &&
           line.menuItemVariantId === item.selectedVariantId &&
+          line.serviceLocation === item.serviceLocation &&
           line.sentQuantity === 0,
       );
       let items = current.items;
@@ -677,6 +693,7 @@ export function PosScreen() {
             id: `optimistic-${crypto.randomUUID()}`,
             menuItemId: item.id,
             menuItemVariantId: item.selectedVariantId,
+            serviceLocation: item.serviceLocation,
             itemName: item.displayName,
             unitPriceTyiyn: item.priceTyiyn,
             quantity: delta,
@@ -764,9 +781,9 @@ export function PosScreen() {
       setIsTransitioning(false);
     }
   }
-  async function printCreatedOrderLocally(order: CreatedOrder) {
+  async function printCreatedOrderLocally(order: CreatedOrder): Promise<boolean> {
     const job = order.printJobs[0];
-    if (!job) return;
+    if (!job) return false;
     const stationId = getPrintStationId();
     try {
       const response = await fetch(`/api/print-jobs/${job.id}/claim`, {
@@ -775,7 +792,8 @@ export function PosScreen() {
         body: JSON.stringify({ stationId }),
       });
       const payload: unknown = await response.json();
-      if (!response.ok || !isClaimResponse(payload) || !payload.data) return;
+      if (!response.ok || !isClaimResponse(payload) || !payload.data) return false;
+      let printed = false;
       await printOrder(order, async (printJob, status, lastError) => {
         const report = await fetch(`/api/print-jobs/${printJob.id}`, {
           method: "PATCH",
@@ -783,10 +801,13 @@ export function PosScreen() {
           body: JSON.stringify({ status, lastError: lastError ?? null, stationId }),
         });
         if (!report.ok) throw new Error("Не удалось сохранить результат печати.");
+        printed = status === "submitted";
       }, job.type, job.id);
+      return printed;
     } catch {
       // The claimed job remains available for the configured fallback station
       // once its short processing lease expires.
+      return false;
     }
   }
   async function deleteEmptyOrder() {
@@ -922,21 +943,27 @@ export function PosScreen() {
                   const hasMultipleVariants = item.variants.length > 1;
                   const singleVariant =
                     item.variants.length === 1 ? item.variants[0] : undefined;
-                  const expanded = expandedItemId === item.id;
+                  const choosingLocation = locationPickerItemId === item.id;
                   const chooseCard = () => {
-                    if (!active) return;
-                    if (hasMultipleVariants)
-                      setExpandedItemId((current) =>
+                    if (!active || active.pendingCompletion) return;
+                    setLocationPickerItemId((current) =>
                         current === item.id ? null : item.id,
                       );
-                    else addItem(item, singleVariant);
+                  };
+                  const chooseLocation = (serviceLocation: "hall" | "takeaway") => {
+                    setLocationPickerItemId(null);
+                    if (hasMultipleVariants) {
+                      setVariantPicker({ item, serviceLocation });
+                      return;
+                    }
+                    addItem(item, singleVariant, serviceLocation);
                   };
                   return (
                     <div
                       key={item.id}
                       role="button"
-                      tabIndex={active ? 0 : -1}
-                      aria-expanded={hasMultipleVariants ? expanded : undefined}
+                      tabIndex={active && !active.pendingCompletion ? 0 : -1}
+                      aria-expanded={choosingLocation}
                       onClick={chooseCard}
                       onKeyDown={(event) => {
                         if (
@@ -966,9 +993,7 @@ export function PosScreen() {
                                 </span>
                               </span>
                             ))}
-                            <span className="mt-0.5 text-xs">
-                              {expanded ? "⌃" : "⌄"}
-                            </span>
+                            <span className="mt-0.5 text-xs">{choosingLocation ? "⌃" : "⌄"}</span>
                           </span>
                         ) : (
                           <span className="mt-2 block text-base font-bold text-primary-strong">
@@ -978,25 +1003,14 @@ export function PosScreen() {
                           </span>
                         )}
                       </div>
-                      {hasMultipleVariants && expanded && (
-                        <div className="mt-3 flex w-full flex-col gap-2 border-t border-slate-100 pt-3">
-                          {item.variants.map((variant, index) => (
-                            <button
-                              type="button"
-                              key={variant.id}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                addItem(item, variant);
-                              }}
-                              disabled={!active}
-                              className={`flex w-full min-w-0 items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition disabled:cursor-not-allowed ${variantButtonStyles[index % variantButtonStyles.length]}`}
-                            >
-                              <span className="truncate">{variant.name}</span>
-                              <span className="shrink-0 text-sm font-bold">
-                                {formatSom(variant.priceTyiyn)}
-                              </span>
-                            </button>
-                          ))}
+                      {choosingLocation && (
+                        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3" onClick={(event) => event.stopPropagation()}>
+                          <button type="button" onClick={() => chooseLocation("hall")} className="rounded-xl bg-emerald-100 px-2 py-2.5 text-sm font-bold text-emerald-950 transition hover:bg-emerald-200">
+                            Зал
+                          </button>
+                          <button type="button" onClick={() => chooseLocation("takeaway")} className="rounded-xl bg-amber-100 px-2 py-2.5 text-sm font-bold text-amber-950 transition hover:bg-amber-200">
+                            На вынос
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1073,6 +1087,7 @@ export function PosScreen() {
                         item={item}
                         disabled={isOrderLocked}
                         canChangeQuantity={item.menuItemId !== null}
+                        isSentToKitchen={item.sentQuantity >= item.quantity}
                         onDecrease={() => { if (item.menuItemId) subtractItem(item); }}
                         onIncrease={() => {
                           if (active && item.menuItemId)
@@ -1188,6 +1203,39 @@ export function PosScreen() {
           </div>
         </div>
       )}
+      {variantPicker && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="variant-picker-title">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="variant-picker-title" className="text-lg font-bold text-slate-950">
+              {variantPicker.item.name}: выберите характеристику
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Место: {variantPicker.serviceLocation === "hall" ? "зал" : "на вынос"}
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              {variantPicker.item.variants.map((variant, index) => (
+                <button
+                  type="button"
+                  key={variant.id}
+                  onClick={() => {
+                    addItem(variantPicker.item, variant, variantPicker.serviceLocation);
+                    setVariantPicker(null);
+                  }}
+                  className={`flex w-full min-w-0 items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition ${variantButtonStyles[index % variantButtonStyles.length]}`}
+                >
+                  <span className="truncate">{variant.name}</span>
+                  <span className="shrink-0 text-base font-bold">{formatSom(variant.priceTyiyn)}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button type="button" onClick={() => setVariantPicker(null)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showUnknownPurchase && active && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="unknown-purchase-title">
           <form
@@ -1229,6 +1277,7 @@ type OrderCardProps = {
   item: ActiveOrder["items"][number];
   disabled: boolean;
   canChangeQuantity: boolean;
+  isSentToKitchen: boolean;
   onDecrease: () => void;
   onIncrease: () => void;
   onRemove: () => void;
@@ -1239,6 +1288,7 @@ function OrderCard({
   item,
   disabled,
   canChangeQuantity,
+  isSentToKitchen,
   onDecrease,
   onIncrease,
   onRemove,
@@ -1250,9 +1300,9 @@ function OrderCard({
         type="button"
         onClick={onSend}
         disabled={disabled}
-        aria-label={`Отправить ${item.itemName} на кухню`}
-        title="Отправить на кухню"
-        className="absolute right-9 top-2 grid size-6 place-items-center rounded-md border border-primary/25 bg-teal-50 text-sm font-bold text-primary-strong hover:bg-teal-100 disabled:opacity-40"
+        className={`absolute right-9 top-2 grid size-6 place-items-center rounded-md border text-sm font-bold disabled:opacity-40 ${isSentToKitchen ? "border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200" : "border-primary/25 bg-teal-50 text-primary-strong hover:bg-teal-100"}`}
+        aria-label={isSentToKitchen ? `Блюдо ${item.itemName} уже отправлено на кухню` : `Отправить ${item.itemName} на кухню`}
+        title={isSentToKitchen ? "Уже напечатано на кухне" : "Отправить на кухню"}
       >
         ↗
       </button>}
@@ -1436,6 +1486,7 @@ function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
     createdAt: order.createdAt,
     items: order.items.map((item) => ({
       menuItemId: item.menuItemId,
+      serviceLocation: item.serviceLocation,
       itemName: item.itemName,
       unitPriceTyiyn: item.unitPriceTyiyn,
       quantity: item.quantity,
@@ -1447,13 +1498,16 @@ function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
 }
 function selectMenuItem(
   item: MenuItem,
-  variant?: MenuItem["variants"][number],
+  variant: MenuItem["variants"][number] | undefined,
+  serviceLocation: "hall" | "takeaway",
 ): SelectedMenuItem {
+  const itemName = variant ? `${item.name} · ${variant.name}` : item.name;
   return {
     ...item,
     priceTyiyn: variant?.priceTyiyn ?? item.priceTyiyn,
     selectedVariantId: variant?.id ?? null,
-    displayName: variant ? `${item.name} · ${variant.name}` : item.name,
+    serviceLocation,
+    displayName: `${itemName} · ${serviceLocation === "hall" ? "Зал" : "На вынос"}`,
   };
 }
 function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
@@ -1467,6 +1521,7 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
     fulfillmentType: item.fulfillmentType,
     variants: [],
     selectedVariantId: item.menuItemVariantId,
+    serviceLocation: item.serviceLocation ?? "hall",
     displayName: item.itemName,
   };
 }
