@@ -10,6 +10,7 @@ type MenuItemRow = {
   name: string;
   price_tyiyn: number;
   is_quick: boolean;
+  requires_service_location: boolean;
 };
 type VariantRow = { id: string; menu_item_id: string; name: string; price_tyiyn: number };
 
@@ -24,7 +25,7 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
       .order("name", { ascending: true }),
     supabase
       .from("menu_items")
-      .select("id, category_id, name, price_tyiyn, is_quick")
+      .select("id, category_id, name, price_tyiyn, is_quick, requires_service_location")
       .eq("is_active", true)
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
@@ -65,6 +66,7 @@ export async function getActiveMenuCatalog(): Promise<MenuCatalog> {
         name: item.name,
         priceTyiyn: item.price_tyiyn,
         isQuick: Boolean(item.is_quick),
+        requiresServiceLocation: Boolean(item.requires_service_location),
         fulfillmentType: category.fulfillment_type,
         variants: (variantsByItem.get(item.id) ?? []).map((variant) => ({ id: variant.id, name: variant.name, priceTyiyn: variant.price_tyiyn })),
       })),

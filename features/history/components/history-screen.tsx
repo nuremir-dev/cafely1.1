@@ -19,6 +19,7 @@ export function HistoryScreen() {
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
+  const [reprintingOrderId, setReprintingOrderId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadPage = useCallback(async (cursor: string | null, append: boolean) => {
@@ -67,6 +68,43 @@ export function HistoryScreen() {
       await fetch(`/api/print-jobs/${job.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status, lastError: lastError ?? null }) });
       setSelectedOrder((current) => current ? { ...current, printJobs: current.printJobs.map((item) => item.id === job.id ? { ...item, status, lastError: status === "failed" ? lastError ?? "Ошибка печати" : null, attempts: item.attempts + 1 } : item) } : current);
     }, job.type, job.id);
+  }
+
+  async function reprintCustomerReceipt(id: string) {
+    setReprintingOrderId(id);
+    try {
+      const response = await fetch(`/api/orders/${id}`, { cache: "no-store" });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isDetailsResponse(payload)) throw new Error(readErrorMessage(payload));
+      const customerJob = payload.data.printJobs.find((job) => job.type === "customer");
+      if (!customerJob) throw new Error("Для этого заказа не найден клиентский чек.");
+
+      const receipt = { ...payload.data, created: false };
+      let printError: string | null = null;
+      await printOrder(receipt, async (job, status, lastError) => {
+        const report = await fetch(`/api/print-jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status, lastError: lastError ?? null }),
+        });
+        if (!report.ok) throw new Error("Не удалось сохранить результат повторной печати.");
+        setSelectedOrder((current) => current?.id === id
+          ? {
+              ...current,
+              printJobs: current.printJobs.map((item) => item.id === job.id
+                ? { ...item, status, lastError: status === "failed" ? lastError ?? "Ошибка печати" : null, attempts: item.attempts + 1 }
+                : item),
+            }
+          : current);
+        if (status === "failed") printError = lastError ?? "Не удалось повторно распечатать чек.";
+      }, "customer", customerJob.id);
+      if (printError) throw new Error(printError);
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Не удалось повторно распечатать чек.");
+    } finally {
+      setReprintingOrderId(null);
+    }
   }
 
   async function cancelOrder(id: string) {
@@ -121,14 +159,17 @@ export function HistoryScreen() {
         {isLoading ? <p className="rounded-xl bg-surface p-5 text-slate-600">Загрузка истории…</p> : (
           <>
             {orders.length === 0 ? <p className="rounded-xl bg-surface p-5 text-slate-600">Продаж пока нет.</p> : (
-              <ul className="overflow-hidden rounded-2xl border border-border bg-surface">
+              <ul className="max-h-[calc(100dvh-16rem)] overflow-y-auto rounded-2xl border border-border bg-surface pr-1">
                 {orders.map((order) => (
                   <li key={order.id} className="border-b border-border last:border-0">
-                    <div className="flex items-center gap-2 p-4">
+                    <div className="flex flex-wrap items-center gap-2 p-4">
                       <button type="button" onClick={() => void openOrder(order.id)} className="grid min-w-0 flex-1 gap-2 text-left hover:text-primary-strong sm:grid-cols-[7rem_1fr_auto] sm:items-center">
                         <span className="font-bold">№{order.orderNumber}</span>
                         <span className="text-sm text-slate-600">{formatDateTime(order.createdAt)} · {order.itemCount} шт. · {order.cashierName}</span>
                         <span className="font-bold text-primary-strong">{formatSom(order.totalTyiyn)}</span>
+                      </button>
+                      <button type="button" onClick={() => void reprintCustomerReceipt(order.id)} disabled={reprintingOrderId === order.id} className="shrink-0 rounded-lg bg-teal-50 px-3 py-2 text-sm font-bold text-primary-strong ring-1 ring-inset ring-teal-200 hover:bg-teal-100 disabled:opacity-50">
+                        {reprintingOrderId === order.id ? "Печать…" : "🖨 Распечатать чек"}
                       </button>
                       <button type="button" onClick={() => void cancelOrder(order.id)} disabled={cancellingOrderId === order.id} className="shrink-0 rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50">{cancellingOrderId === order.id ? "Отмена…" : "Отменить"}</button>
                     </div>

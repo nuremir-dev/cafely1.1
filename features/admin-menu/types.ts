@@ -16,6 +16,7 @@ export type AdminMenuItem = {
   sortOrder: number;
   isActive: boolean;
   isQuick: boolean;
+  requiresServiceLocation: boolean;
   variants: AdminMenuItemVariant[];
 };
 

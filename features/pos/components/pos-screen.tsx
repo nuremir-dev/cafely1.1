@@ -11,6 +11,7 @@ import type {
 } from "@/features/orders/server/active-orders";
 import { readPosCache, type CachedPosOrder, writePosCache } from "@/features/pos/local-pos-cache";
 import { getPrintStationId, printCustomerReceiptSnapshot, printOrder } from "@/features/printing/qz-client";
+import type { CashShift, ShiftDashboard } from "@/features/shifts/types";
 import { TableGrid } from "@/features/tables/components/table-grid";
 
 type MenuResponse = { data: MenuCatalog };
@@ -24,7 +25,7 @@ type TableMapResponse = {
 type MenuItem = MenuCatalog["categories"][number]["items"][number];
 type SelectedMenuItem = MenuItem & {
   selectedVariantId: string | null;
-  serviceLocation: "hall" | "takeaway";
+  serviceLocation?: "hall" | "takeaway";
   displayName: string;
 };
 const menuCacheKey = "cafeline:pos-menu:v1";
@@ -55,6 +56,10 @@ export function PosScreen() {
   const [unknownPurchaseAmount, setUnknownPurchaseAmount] = useState("");
   const [locationPickerItemId, setLocationPickerItemId] = useState<string | null>(null);
   const [variantPicker, setVariantPicker] = useState<{ item: MenuItem; serviceLocation: "hall" | "takeaway" } | null>(null);
+  const [cashShift, setCashShift] = useState<CashShift | null | undefined>(undefined);
+  const [shiftName, setShiftName] = useState("");
+  const [isOpeningShift, setIsOpeningShift] = useState(false);
+  const [shiftError, setShiftError] = useState<string | null>(null);
   const [tableMap, setTableMap] = useState({
     cells: Array.from({ length: 12 }, (_, index) => index),
     rows: 6,
@@ -86,6 +91,20 @@ export function PosScreen() {
         setActive(selected);
       }
     }).finally(() => setCacheReady(true));
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/shifts", { cache: "no-store" })
+      .then(async (response) => {
+        const payload: unknown = await response.json();
+        if (!response.ok || !isShiftDashboardResponse(payload))
+          throw new Error(message(payload, "Не удалось проверить смену."));
+        setCashShift(payload.data.currentShift);
+      })
+      .catch((cause) => {
+        setShiftError(cause instanceof Error ? cause.message : "Не удалось проверить смену.");
+        setCashShift(null);
+      });
   }, []);
 
   useEffect(() => {
@@ -539,7 +558,7 @@ export function PosScreen() {
     if (local.syncState === "synced")
       void syncTableAssignment(local).catch(() => undefined);
   }
-  function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined, serviceLocation: "hall" | "takeaway") {
+  function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined, serviceLocation?: "hall" | "takeaway") {
     if (!active || active.pendingCompletion) return;
     queueItemChange(active.id, selectMenuItem(item, variant, serviceLocation), 1);
   }
@@ -577,7 +596,32 @@ export function PosScreen() {
   }
   function subtractItem(item: ActiveOrder["items"][number]) {
     if (!active || active.pendingCompletion) return;
+    if (item.menuItemId === null) {
+      changeUnknownPurchaseQuantity(item, -1);
+      return;
+    }
     queueItemChange(active.id, selectOrderItem(item), -1);
+  }
+  function changeUnknownPurchaseQuantity(item: ActiveOrder["items"][number], delta: number) {
+    if (!active || item.menuItemId !== null || active.pendingCompletion) return;
+    const nextQuantity = item.quantity + delta;
+    const orderId = active.id;
+    setActive((current) => {
+      if (!current || current.id !== orderId) return current;
+      const items = nextQuantity <= 0
+        ? current.items.filter((candidate) => candidate.id !== item.id)
+        : current.items.map((candidate) => candidate.id === item.id
+          ? { ...candidate, quantity: nextQuantity, lineTotalTyiyn: candidate.unitPriceTyiyn * nextQuantity }
+          : candidate);
+      const next = { ...current, items, totalTyiyn: Math.max(0, current.totalTyiyn + item.unitPriceTyiyn * delta) };
+      activeOrderRef.current = next;
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      return next;
+    });
+    setOrders((current) => current.map((order) => order.id === orderId
+      ? { ...order, totalTyiyn: Math.max(0, order.totalTyiyn + item.unitPriceTyiyn * delta) }
+      : order));
   }
   async function removeItem(item: ActiveOrder["items"][number]) {
     if (!active || active.pendingCompletion || isTransitioning) return;
@@ -610,8 +654,13 @@ export function PosScreen() {
   async function printLocalItemsToKitchen(
     items: ActiveOrder["items"],
     successMessage: string,
+    repeat = false,
   ) {
-    const kitchenItems = items.filter((item) => item.menuItemId !== null);
+    const kitchenItems = items.filter(
+      (item) =>
+        item.menuItemId !== null &&
+        (repeat || item.sentQuantity < item.quantity),
+    );
     if (
       !active ||
       kitchenItems.length === 0 ||
@@ -633,7 +682,7 @@ export function PosScreen() {
           items: kitchenItems.map((item) => ({
             menuItemId: item.menuItemId,
             menuItemVariantId: item.menuItemVariantId,
-            quantity: item.quantity,
+            quantity: repeat ? item.quantity : item.quantity - item.sentQuantity,
             serviceLocation: item.serviceLocation ?? "hall",
           })),
         }),
@@ -857,11 +906,60 @@ export function PosScreen() {
 
   const itemCount =
     active?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0;
+  const hasPendingKitchenItems =
+    active?.items.some(
+      (item) => item.menuItemId !== null && item.sentQuantity < item.quantity,
+    ) ?? false;
   const isOrderLocked = isTransitioning || Boolean(active?.pendingCompletion);
   const orderedOrders = useMemo(
     () => [...orders].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     [orders],
   );
+
+  async function openShift() {
+    if (!shiftName.trim() || isOpeningShift) {
+      if (!shiftName.trim()) setShiftError("Введите имя кассира.");
+      return;
+    }
+    setIsOpeningShift(true);
+    try {
+      const response = await fetch("/api/shifts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ openedBy: shiftName }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isCashShiftResponse(payload))
+        throw new Error(message(payload, "Не удалось открыть смену."));
+      setCashShift(payload.data);
+      setShiftError(null);
+    } catch (cause) {
+      setShiftError(cause instanceof Error ? cause.message : "Не удалось открыть смену.");
+    } finally {
+      setIsOpeningShift(false);
+    }
+  }
+
+  if (cashShift === undefined) {
+    return <p className="rounded-2xl bg-white p-6 text-sm text-slate-600 shadow-sm">Проверяем смену…</p>;
+  }
+  if (!cashShift) {
+    return (
+      <section className="mx-auto mt-10 max-w-md rounded-[1.7rem] border border-white/80 bg-white/90 p-6 shadow-[0_10px_34px_rgba(56,72,65,0.1)] backdrop-blur-xl">
+        <p className="text-sm font-semibold text-primary-strong">Начало рабочего дня</p>
+        <h1 className="mt-2 text-2xl font-bold tracking-tight">Откройте смену</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-600">Перед началом продаж укажите имя кассира. Заказы дня будут учтены в этой смене.</p>
+        <label className="mt-6 block text-sm font-semibold text-slate-700">
+          Имя кассира
+          <input autoFocus value={shiftName} onChange={(event) => setShiftName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void openShift(); }} maxLength={100} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-base outline-none focus:border-primary" placeholder="Например, Айжан" />
+        </label>
+        {shiftError && <p role="alert" className="mt-3 text-sm text-red-700">{shiftError}</p>}
+        <button type="button" onClick={() => void openShift()} disabled={isOpeningShift} className="mt-6 w-full rounded-xl bg-primary px-4 py-3 font-bold text-white disabled:opacity-50">
+          {isOpeningShift ? "Открываем…" : "Открыть смену"}
+        </button>
+      </section>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -946,6 +1044,10 @@ export function PosScreen() {
                   const choosingLocation = locationPickerItemId === item.id;
                   const chooseCard = () => {
                     if (!active || active.pendingCompletion) return;
+                    if (!item.requiresServiceLocation) {
+                      addItem(item, undefined);
+                      return;
+                    }
                     setLocationPickerItemId((current) =>
                         current === item.id ? null : item.id,
                       );
@@ -1086,9 +1188,9 @@ export function PosScreen() {
                         key={item.id}
                         item={item}
                         disabled={isOrderLocked}
-                        canChangeQuantity={item.menuItemId !== null}
-                        isSentToKitchen={item.sentQuantity >= item.quantity}
-                        onDecrease={() => { if (item.menuItemId) subtractItem(item); }}
+                        canChangeQuantity
+                        isSentToKitchen={item.menuItemId !== null && item.sentQuantity >= item.quantity}
+                        onDecrease={() => subtractItem(item)}
                         onIncrease={() => {
                           if (active && item.menuItemId)
                             queueItemChange(
@@ -1096,6 +1198,8 @@ export function PosScreen() {
                               selectOrderItem(item),
                               1,
                             );
+                          else if (item.menuItemId === null)
+                            changeUnknownPurchaseQuantity(item, 1);
                         }}
                         onRemove={() => void removeItem(item)}
                         onSend={item.menuItemId ? () =>
@@ -1123,21 +1227,21 @@ export function PosScreen() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (active.hasKitchenTicket) {
+                      if (!hasPendingKitchenItems && active.hasKitchenTicket) {
                         setShowKitchenRepeatConfirm(true);
                         return;
                       }
                       void printLocalItemsToKitchen(
                         active.items,
-                        "Блюда переданы на печатную станцию. Корзина не изменена.",
+                        "Новые блюда переданы на печатную станцию. Корзина не изменена.",
                       );
                     }}
                     disabled={isOrderLocked}
-                    className={`mt-4 w-full rounded-2xl border px-4 py-3 text-sm font-bold disabled:opacity-40 ${active.hasKitchenTicket ? "border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200" : "border-primary bg-teal-50 text-primary-strong hover:bg-teal-100"}`}
+                    className={`mt-4 w-full rounded-2xl border px-4 py-3 text-sm font-bold disabled:opacity-40 ${active.hasKitchenTicket && !hasPendingKitchenItems ? "border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200" : "border-primary bg-teal-50 text-primary-strong hover:bg-teal-100"}`}
                   >
-                    {active.hasKitchenTicket
+                    {active.hasKitchenTicket && !hasPendingKitchenItems
                       ? "Уже отправлено на кухню"
-                      : "Отправить всё на кухню"}
+                      : "Отправить новые блюда на кухню"}
                   </button>
                 )}
                 {active.items.length === 0 ? (
@@ -1193,6 +1297,7 @@ export function PosScreen() {
                   void printLocalItemsToKitchen(
                     active.items,
                     "Блюда повторно переданы на печатную станцию. Корзина не изменена.",
+                    true,
                   );
                 }}
                 className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500"
@@ -1499,7 +1604,7 @@ function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
 function selectMenuItem(
   item: MenuItem,
   variant: MenuItem["variants"][number] | undefined,
-  serviceLocation: "hall" | "takeaway",
+  serviceLocation?: "hall" | "takeaway",
 ): SelectedMenuItem {
   const itemName = variant ? `${item.name} · ${variant.name}` : item.name;
   return {
@@ -1507,7 +1612,7 @@ function selectMenuItem(
     priceTyiyn: variant?.priceTyiyn ?? item.priceTyiyn,
     selectedVariantId: variant?.id ?? null,
     serviceLocation,
-    displayName: `${itemName} · ${serviceLocation === "hall" ? "Зал" : "На вынос"}`,
+    displayName: serviceLocation ? `${itemName} · ${serviceLocation === "hall" ? "Зал" : "На вынос"}` : itemName,
   };
 }
 function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
@@ -1518,10 +1623,11 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
     name: item.itemName,
     priceTyiyn: item.unitPriceTyiyn,
     isQuick: false,
+    requiresServiceLocation: false,
     fulfillmentType: item.fulfillmentType,
     variants: [],
     selectedVariantId: item.menuItemVariantId,
-    serviceLocation: item.serviceLocation ?? "hall",
+    serviceLocation: item.serviceLocation,
     displayName: item.itemName,
   };
 }
@@ -1618,6 +1724,12 @@ function isPrintableResponse(value: unknown): value is PrintableResponse {
 }
 function isClaimResponse(value: unknown): value is ClaimResponse {
   return Boolean(value && typeof value === "object" && "data" in value && typeof value.data === "boolean");
+}
+function isShiftDashboardResponse(value: unknown): value is { data: ShiftDashboard } {
+  return Boolean(value && typeof value === "object" && "data" in value && value.data && typeof value.data === "object" && "currentShift" in value.data && "shifts" in value.data);
+}
+function isCashShiftResponse(value: unknown): value is { data: CashShift } {
+  return Boolean(value && typeof value === "object" && "data" in value && value.data && typeof value.data === "object" && "businessDate" in value.data && "status" in value.data);
 }
 function isTableMapResponse(value: unknown): value is TableMapResponse {
   return Boolean(

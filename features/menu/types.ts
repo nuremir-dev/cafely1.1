@@ -4,6 +4,7 @@ export type MenuItem = {
   name: string;
   priceTyiyn: number;
   isQuick: boolean;
+  requiresServiceLocation: boolean;
   fulfillmentType: FulfillmentType;
   variants: MenuItemVariant[];
 };

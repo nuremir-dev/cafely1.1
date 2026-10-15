@@ -21,6 +21,7 @@ const menuItemSchema = z.object({
   sortOrder: z.int().min(0).max(1_000_000),
   isActive: z.boolean(),
   isQuick: z.boolean().default(false),
+  requiresServiceLocation: z.boolean().default(false),
   variants: z.array(z.object({
     name: z.string().trim().min(1).max(100),
     priceTyiyn: z.int().min(0).max(2_147_483_647),
@@ -45,6 +46,7 @@ type MenuItemRow = {
   sort_order: number;
   is_active: boolean;
   is_quick: boolean;
+  requires_service_location: boolean;
 };
 type VariantRow = { id: string; menu_item_id: string; name: string; price_tyiyn: number; sort_order: number; is_active: boolean };
 
@@ -54,7 +56,7 @@ export async function getAdminMenuData(): Promise<AdminMenuData> {
     supabase.from("categories").select("id, name, sort_order, is_active, fulfillment_type").order("sort_order").order("name"),
     supabase
       .from("menu_items")
-      .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick")
+      .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location")
       .order("sort_order")
       .order("name"),
     createSupabaseAdminClient().from("menu_item_variants").select("id, menu_item_id, name, price_tyiyn, sort_order, is_active").order("sort_order").order("name"),
@@ -114,8 +116,9 @@ export async function createMenuItem(input: unknown): Promise<AdminMenuItem> {
       sort_order: value.sortOrder,
       is_active: value.isActive,
       is_quick: value.isQuick,
+      requires_service_location: value.requiresServiceLocation,
     })
-    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick")
+    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location")
     .single();
 
   if (error) throw toDatabaseError(error, "Не удалось создать блюдо.");
@@ -135,9 +138,10 @@ export async function updateMenuItem(id: string, input: unknown): Promise<AdminM
       sort_order: value.sortOrder,
       is_active: value.isActive,
       is_quick: value.isQuick,
+      requires_service_location: value.requiresServiceLocation,
     })
     .eq("id", id)
-    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick")
+    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location")
     .single();
 
   if (error) throw toDatabaseError(error, "Не удалось обновить блюдо.");
@@ -186,7 +190,7 @@ async function replaceVariants(menuItemId: string, variants: Array<{ name: strin
 async function getMenuItem(id: string): Promise<AdminMenuItem> {
   const supabase = createSupabaseAdminClient();
   const [itemResult, variantsResult] = await Promise.all([
-    supabase.from("menu_items").select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick").eq("id", id).single(),
+    supabase.from("menu_items").select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location").eq("id", id).single(),
     supabase.from("menu_item_variants").select("id, menu_item_id, name, price_tyiyn, sort_order, is_active").eq("menu_item_id", id).order("sort_order").order("name"),
   ]);
   if (itemResult.error || variantsResult.error || !itemResult.data) throw itemResult.error ?? variantsResult.error ?? new Error("Блюдо не найдено.");
@@ -202,6 +206,7 @@ function toMenuItem(row: MenuItemRow, variants: VariantRow[] = []): AdminMenuIte
     sortOrder: row.sort_order,
     isActive: row.is_active,
     isQuick: Boolean(row.is_quick),
+    requiresServiceLocation: Boolean(row.requires_service_location),
     variants: variants.map((variant) => ({ id: variant.id, name: variant.name, priceTyiyn: variant.price_tyiyn, sortOrder: variant.sort_order, isActive: variant.is_active })),
   };
 }

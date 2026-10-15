@@ -16,7 +16,7 @@ const orderItemIdSchema = z.uuid();
 const idempotencyKeySchema = z.uuid();
 const serviceLocationSchema = z.enum(["hall", "takeaway"]);
 const knownCartItemSchema = z.object({ menuItemId: menuItemIdSchema, menuItemVariantId: menuItemVariantIdSchema, quantity: z.int().min(1).max(1000), serviceLocation: serviceLocationSchema.optional() });
-const unknownCartItemSchema = z.object({ menuItemId: z.null(), menuItemVariantId: z.null(), quantity: z.literal(1), adHocAmountTyiyn: z.int().min(1).max(100_000_000) });
+const unknownCartItemSchema = z.object({ menuItemId: z.null(), menuItemVariantId: z.null(), quantity: z.int().min(1).max(1000), adHocAmountTyiyn: z.int().min(1).max(100_000_000) });
 const localCartItemsSchema = z.array(z.union([knownCartItemSchema, unknownCartItemSchema])).min(1).max(200);
 const kitchenCartItemsSchema = z.array(knownCartItemSchema).min(1).max(200);
 
@@ -151,6 +151,33 @@ export async function deleteEmptyActiveOrder(id: string): Promise<void> {
   if (itemsError) throw itemsError;
   if ((items ?? []).length > 0) {
     throw new ApiError("INVALID_REQUEST", 409, "Нельзя удалить заказ с блюдами.");
+  }
+
+  // An empty order may retain kitchen-print records after its dishes were
+  // removed. They use RESTRICT foreign keys, so clear this discarded order's
+  // dependent print snapshot before deleting the order itself.
+  const { error: jobsError } = await supabase
+    .from("print_jobs")
+    .delete()
+    .eq("order_id", id);
+  if (jobsError) throw jobsError;
+  const { data: tickets, error: ticketsError } = await supabase
+    .from("kitchen_tickets")
+    .select("id")
+    .eq("order_id", id);
+  if (ticketsError) throw ticketsError;
+  const ticketIds = (tickets ?? []).map((ticket) => ticket.id);
+  if (ticketIds.length > 0) {
+    const { error: ticketItemsError } = await supabase
+      .from("kitchen_ticket_items")
+      .delete()
+      .in("ticket_id", ticketIds);
+    if (ticketItemsError) throw ticketItemsError;
+    const { error: ticketsDeleteError } = await supabase
+      .from("kitchen_tickets")
+      .delete()
+      .eq("order_id", id);
+    if (ticketsDeleteError) throw ticketsDeleteError;
   }
 
   const { data, error } = await supabase

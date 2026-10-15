@@ -9,12 +9,13 @@ import type { Session } from "@/features/auth/types";
 import { getPrinterSettings, getQzPrinters } from "@/features/printing/qz-client";
 import { PrintStation } from "@/features/printing/components/print-station";
 
-type NavigationItem = { href: string; label: string; icon: "sale" | "history" | "reports" | "menu" | "tables" };
+type NavigationItem = { href: string; label: string; icon: "sale" | "history" | "reports" | "shifts" | "menu" | "tables" };
 
 const navigation: NavigationItem[] = [
   { href: "/pos", label: "Продажа", icon: "sale" },
   { href: "/history", label: "История", icon: "history" },
   { href: "/reports", label: "Отчёты", icon: "reports" },
+  { href: "/shifts", label: "Смена", icon: "shifts" },
 ];
 
 export function AppShell({ children, session }: { children: ReactNode; session: Session }) {
@@ -98,6 +99,7 @@ function ShellIcon({ className, name }: { className?: string; name: NavigationIt
     sale: <><path d="M3 4h2l2.2 10.2A2 2 0 0 0 9.2 16H17a2 2 0 0 0 1.9-1.4L20 10H7" /><circle cx="10" cy="20" r="1" /><circle cx="17" cy="20" r="1" /></>,
     history: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3.5 2" /></>,
     reports: <><path d="M4 20V11M10 20V4M16 20v-7M22 20V8" /></>,
+    shifts: <><path d="M12 2v10" /><path d="M6.2 5.7a8 8 0 1 0 11.6 0" /></>,
     menu: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h3" /></>,
     tables: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M15 4v16M3 12h18" /></>,
   };
