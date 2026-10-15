@@ -94,7 +94,7 @@ export async function printCustomerReceiptSnapshot(order: CreatedOrder) {
   }]);
 }
 
-export async function printKitchenReceiptSnapshot(order: CreatedOrder) {
+export async function printKitchenReceiptSnapshot(order: CreatedOrder, options?: { cancellation?: boolean }) {
   const printer = getPrinterSettings().kitchenPrinter;
   if (!printer) throw new Error("Кухонный принтер не выбран.");
   const api = await qz();
@@ -111,7 +111,7 @@ export async function printKitchenReceiptSnapshot(order: CreatedOrder) {
     type: "pixel",
     format: "html",
     flavor: "plain",
-    data: kitchenReceipt(order),
+    data: kitchenReceipt(order, options),
     options: { pageWidth: 80, pageHeight: kitchenReceiptHeightMm(order) },
   }]);
 }

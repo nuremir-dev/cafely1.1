@@ -1,5 +1,5 @@
 import { requireApiSession } from "@/features/auth/guards";
-import { cancelActiveOrderItem, changeActiveOrderItem, completeActiveOrder, completeLocalCart, deleteEmptyActiveOrder, getActiveOrder, moveActiveOrder, printLocalCartToKitchen, sendActiveOrderItemToKitchen, sendActiveOrderToKitchen } from "@/features/orders/server/active-orders";
+import { cancelActiveOrderItem, changeActiveOrderItem, completeActiveOrder, completeLocalCart, deleteEmptyActiveOrder, getActiveOrder, moveActiveOrder, printLocalCartCancellationToKitchen, printLocalCartToKitchen, sendActiveOrderItemToKitchen, sendActiveOrderToKitchen } from "@/features/orders/server/active-orders";
 import { ApiError, errorResponse } from "@/lib/http/api-error";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
@@ -26,6 +26,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (body.action === "send-to-kitchen") return Response.json({ data: await sendActiveOrderToKitchen(id, body) });
     if (body.action === "complete-local-cart") return Response.json({ data: await completeLocalCart(id, body) });
     if (body.action === "print-local-cart-to-kitchen") return Response.json({ data: await printLocalCartToKitchen(id, body) });
+    if (body.action === "print-local-cart-cancellation-to-kitchen") return Response.json({ data: await printLocalCartCancellationToKitchen(id, body) });
     if (body.action === "complete") return Response.json({ data: await completeActiveOrder(id) });
     if (body.action === "delete-empty") {
       await deleteEmptyActiveOrder(id);

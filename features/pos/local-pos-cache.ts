@@ -10,6 +10,8 @@ export type PosSyncState = "local" | "syncing" | "synced" | "sync-error";
 export type PendingKitchenPrint = {
   idempotencyKey: string;
   printedAt: string;
+  /** Older cached entries have no kind and are regular kitchen tickets. */
+  kind?: "new" | "cancellation";
   items: Array<{
     menuItemId: string;
     menuItemVariantId: string | null;

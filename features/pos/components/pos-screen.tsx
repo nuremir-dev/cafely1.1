@@ -51,6 +51,7 @@ export function PosScreen() {
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [showTables, setShowTables] = useState(false);
   const [showKitchenRepeatConfirm, setShowKitchenRepeatConfirm] = useState(false);
+  const [kitchenCancellationItem, setKitchenCancellationItem] = useState<ActiveOrder["items"][number] | null>(null);
   const [showUnknownPurchase, setShowUnknownPurchase] = useState(false);
   const [unknownPurchaseAmount, setUnknownPurchaseAmount] = useState("");
   const [locationPickerItemId, setLocationPickerItemId] = useState<string | null>(null);
@@ -457,7 +458,9 @@ export function PosScreen() {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: "print-local-cart-to-kitchen",
+          action: pending.kind === "cancellation"
+            ? "print-local-cart-cancellation-to-kitchen"
+            : "print-local-cart-to-kitchen",
           idempotencyKey: pending.idempotencyKey,
           stationId: getPrintStationId(),
           printedLocally: true,
@@ -643,6 +646,10 @@ export function PosScreen() {
   }
   function subtractItem(item: ActiveOrder["items"][number]) {
     if (!active || active.pendingCompletion) return;
+    if (item.menuItemId !== null && item.preparesInKitchen && item.sentQuantity > 0) {
+      setKitchenCancellationItem(item);
+      return;
+    }
     if (item.menuItemId === null) {
       changeUnknownPurchaseQuantity(item, -1);
       return;
@@ -672,6 +679,10 @@ export function PosScreen() {
   }
   async function removeItem(item: ActiveOrder["items"][number]) {
     if (!active || active.pendingCompletion || isTransitioning) return;
+    if (item.menuItemId !== null && item.preparesInKitchen && item.sentQuantity > 0) {
+      setKitchenCancellationItem(item);
+      return;
+    }
     if (item.menuItemId === null) {
       const orderId = active.id;
       const removeUnknownItem = (order: CachedPosOrder) => ({
@@ -689,6 +700,52 @@ export function PosScreen() {
       return;
     }
     queueItemChange(active.id, selectOrderItem(item), -item.quantity);
+  }
+  async function confirmKitchenCancellation() {
+    const item = kitchenCancellationItem;
+    if (!active || !item || item.menuItemId === null || active.pendingCompletion || isTransitioning) return;
+    setIsTransitioning(true);
+    setNotice(null);
+    try {
+      const pending: PendingKitchenPrint = {
+        idempotencyKey: crypto.randomUUID(),
+        printedAt: new Date().toISOString(),
+        kind: "cancellation",
+        items: [{
+          menuItemId: item.menuItemId,
+          menuItemVariantId: item.menuItemVariantId,
+          quantity: item.quantity,
+          serviceLocation: item.serviceLocation ?? "hall",
+        }],
+      };
+      await printKitchenReceiptSnapshot(
+        toLocalKitchenReceipt(active, [item], pending.items),
+        { cancellation: true },
+      );
+      const next = {
+        ...active,
+        items: active.items.filter((candidate) => candidate.id !== item.id),
+        totalTyiyn: Math.max(0, active.totalTyiyn - item.lineTotalTyiyn),
+        pendingKitchenPrints: [...(active.pendingKitchenPrints ?? []), pending],
+      };
+      activeOrderRef.current = next;
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      setActive(next);
+      setOrders((current) => current.map((order) => order.id === next.id ? toActiveOrderSummary(next) : order));
+      setKitchenCancellationItem(null);
+      setNotice(`${item.itemName}: отмена напечатана для кухни.`);
+      void syncPendingKitchenPrint(next, pending).catch((cause) => {
+        setError(cause instanceof Error
+          ? `Чек отмены напечатан. ${cause.message}`
+          : "Чек отмены напечатан и будет синхронизирован автоматически.");
+      });
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось распечатать чек отмены для кухни.");
+    } finally {
+      setIsTransitioning(false);
+    }
   }
   function queueItemChange(
     orderId: string,
@@ -722,6 +779,7 @@ export function PosScreen() {
       const pending: PendingKitchenPrint = {
         idempotencyKey: crypto.randomUUID(),
         printedAt: new Date().toISOString(),
+        kind: "new",
         items: kitchenItems.flatMap((item) => item.menuItemId ? [{
           menuItemId: item.menuItemId,
           menuItemVariantId: item.menuItemVariantId,
@@ -998,7 +1056,7 @@ export function PosScreen() {
         </button>
       </section>
 
-      <div className="pointer-events-none fixed right-4 top-4 z-50 grid w-[min(24rem,calc(100vw-2rem))] gap-2">
+      <div className="pointer-events-none fixed inset-x-0 bottom-4 z-50 grid justify-items-center gap-2 px-4">
         {error && (
           <Toast kind="error" onClose={() => setError(null)}>
             {error}
@@ -1279,6 +1337,41 @@ export function PosScreen() {
           </div>
         </aside>
       </div>
+      {kitchenCancellationItem && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kitchen-cancellation-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="kitchen-cancellation-title" className="text-lg font-bold text-slate-950">
+              Отменить блюдо на кухне?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              «{kitchenCancellationItem.itemName}» уже отправлено на кухню. После подтверждения будет сразу напечатан отдельный кухонный чек с надписью «ОТМЕНА», затем блюдо исчезнет из заказа.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setKitchenCancellationItem(null)}
+                disabled={isTransitioning}
+                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              >
+                Не отменять
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmKitchenCancellation()}
+                disabled={isTransitioning}
+                className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-40"
+              >
+                Напечатать отмену
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showKitchenRepeatConfirm && active && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"
@@ -1567,7 +1660,7 @@ function Toast({
   return (
     <div
       role={kind === "error" ? "alert" : "status"}
-      className={`pointer-events-auto flex items-start gap-3 rounded-2xl border p-4 shadow-xl transition-all duration-300 ease-out ${style}`}
+      className={`pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-2xl border p-4 shadow-xl transition-all duration-300 ease-out ${style}`}
     >
       <span
         className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full text-xs font-bold ${iconStyle}`}
@@ -1587,6 +1680,7 @@ function Toast({
   );
 }
 function orderTitle(order: ActiveOrderSummary) {
+  if (order.tableNumber) return `Стол №${order.tableNumber}`;
   return order.orderNumber > 0 ? `Заказ №${order.orderNumber}` : "Новый заказ";
 }
 function activeTitle(order: ActiveOrder) {

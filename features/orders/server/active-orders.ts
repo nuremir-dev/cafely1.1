@@ -316,6 +316,40 @@ export async function printLocalCartToKitchen(id: string, input: unknown): Promi
   return toPrintable(orderResult.data as OrderRow, (itemsResult.data ?? []) as ItemRow[], [jobResult.data as PrintJobRow]);
 }
 
+/** Records a ticket that was already printed locally as an explicit kitchen cancellation. */
+export async function printLocalCartCancellationToKitchen(id: string, input: unknown): Promise<CreatedOrder> {
+  if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
+  const parsed = z.object({ items: kitchenCartItemsSchema, idempotencyKey: idempotencyKeySchema, stationId: z.string().min(8).max(100), printedLocally: z.literal(true) }).safeParse(input);
+  if (!parsed.success) throw invalidRequest();
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("print_cafeline_local_cart_cancellation_to_kitchen", {
+    p_order_id: id,
+    p_items: parsed.data.items.map((item) => ({ menu_item_id: item.menuItemId, menu_item_variant_id: item.menuItemVariantId, quantity: item.quantity, service_location: item.serviceLocation ?? "hall" })),
+    p_idempotency_key: parsed.data.idempotencyKey,
+    p_station_id: parsed.data.stationId,
+  });
+  if (error) throw mapRpcError(error, "Не удалось синхронизировать отмену для кухни.");
+  const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
+  if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал отмену для кухни.");
+  const [orderResult, itemsResult, jobResult] = await Promise.all([
+    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
+    supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
+  ]);
+  if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Отмена сохранена, но не удалось подтвердить печать.");
+  if ((jobResult.data as PrintJobRow).status === "processing") {
+    const { error: reportError } = await supabase.rpc("report_cafeline_station_print_job", {
+      p_job_id: result.print_job_id,
+      p_station_id: parsed.data.stationId,
+      p_status: "submitted",
+      p_last_error: null,
+    });
+    if (reportError) throw new ApiError("INTERNAL_ERROR", 500, "Чек отмены напечатан, но не удалось подтвердить синхронизацию.");
+    (jobResult.data as PrintJobRow).status = "submitted";
+  }
+  return toPrintable(orderResult.data as OrderRow, (itemsResult.data ?? []) as ItemRow[], [jobResult.data as PrintJobRow]);
+}
+
 function toSummary(row: OrderRow): ActiveOrderSummary {
   return { id: row.id, orderNumber: row.order_number, tableNumber: row.table_number, totalTyiyn: row.total_tyiyn, cashierName: row.cashier_name, createdAt: row.created_at };
 }

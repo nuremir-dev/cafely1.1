@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CreatedOrder } from "@/features/orders/types";
 
-import { kitchenReceiptHeightMm } from "./templates";
+import { kitchenReceipt, kitchenReceiptHeightMm } from "./templates";
 
 const order = (items: number): CreatedOrder => ({
   id: "order",
@@ -25,5 +25,9 @@ const order = (items: number): CreatedOrder => ({
 describe("kitchenReceiptHeightMm", () => {
   it("grows the paper length for long kitchen tickets", () => {
     expect(kitchenReceiptHeightMm(order(8))).toBeGreaterThan(kitchenReceiptHeightMm(order(2)));
+  });
+
+  it("marks an item cancellation clearly for the kitchen", () => {
+    expect(kitchenReceipt(order(1), { cancellation: true })).toContain("ОТМЕНА");
   });
 });

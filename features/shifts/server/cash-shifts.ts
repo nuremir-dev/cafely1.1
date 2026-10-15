@@ -29,7 +29,8 @@ export async function getShiftDashboard(selectedDate?: string | null): Promise<S
   let query = supabase
     .from("cash_shifts")
     .select("id, business_date, opened_by, opened_at, closed_by, closed_at, status, sales_total_tyiyn, sold_item_count")
-    .order("business_date", { ascending: false });
+    .order("business_date", { ascending: false })
+    .order("opened_at", { ascending: false });
   if (selectedDate) query = query.eq("business_date", selectedDate);
   const [historyResult, currentResult] = await Promise.all([
     query,

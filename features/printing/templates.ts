@@ -7,12 +7,13 @@ const shell = (body: string) => `<!doctype html><html><head><meta charset="utf-8
 
 export function customerReceipt(order: CreatedOrder): string {
   const title = order.orderNumber > 0 ? `Заказ №${order.orderNumber}` : "Новый заказ";
-  return shell(`<h1>MANGO</h1><p class="center">${title}<br>${time(order.createdAt)}</p><hr><table>${order.items.map((item) => `<tr><td>${escapeHtml(item.itemName)}<br><small>${item.quantity} × ${som(item.unitPriceTyiyn)}</small></td><td>${som(item.lineTotalTyiyn)}</td></tr>`).join("")}</table><hr><p class="big">ИТОГО: ${som(order.totalTyiyn)}</p><p class="center">Спасибо за заказ!</p>`);
+  return shell(`<h1>MANGO</h1><p class="center">${title}<br>${time(order.createdAt)}</p><hr><table>${order.items.map((item) => `<tr><td>${escapeHtml(item.itemName)}<br><small>${item.quantity} × ${som(item.unitPriceTyiyn)}</small></td><td>${som(item.lineTotalTyiyn)}</td></tr>`).join("")}</table><hr><p class="big">ИТОГО: ${som(order.totalTyiyn)}</p><p class="center">Спасибо за заказ!</p><p class="center">Было вкусно? Оставьте комментарий<br>@mango.karakol ❤</p>`);
 }
 
-export function kitchenReceipt(order: CreatedOrder): string {
+export function kitchenReceipt(order: CreatedOrder, options?: { cancellation?: boolean }): string {
   const location = order.tableNumber ? `СТОЛ ${order.tableNumber}` : "НОВЫЙ ЗАКАЗ";
-  return shell(`<h1>КУХНЯ</h1><p class="center big">${location}</p><p class="center">ЗАКАЗ №${order.orderNumber}<br>${time(order.createdAt)}</p><hr>${order.items.map((item) => `<p class="big">${item.quantity} × ${escapeHtml(item.itemName).toUpperCase()}</p>`).join("")}<hr>`);
+  const title = options?.cancellation ? "ОТМЕНА" : "КУХНЯ";
+  return shell(`<h1>${title}</h1><p class="center big">${location}</p><p class="center">ЗАКАЗ №${order.orderNumber}<br>${time(order.createdAt)}</p><hr>${order.items.map((item) => `<p class="big">${item.quantity} × ${escapeHtml(item.itemName).toUpperCase()}</p>`).join("")}<hr>`);
 }
 
 /**
