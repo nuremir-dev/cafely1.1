@@ -30,6 +30,31 @@ describe("kitchenReceiptHeightMm", () => {
   it("marks an item cancellation clearly for the kitchen", () => {
     expect(kitchenReceipt(order(1), { cancellation: true })).toContain("ОТМЕНА");
   });
+
+  it("prints table, order details, quantity, and service location for the kitchen", () => {
+    const ticket = kitchenReceipt({
+      ...order(1),
+      items: [{
+        menuItemId: "lagman",
+        itemName: "Лагман · Большой",
+        unitPriceTyiyn: 25_000,
+        quantity: 2,
+        lineTotalTyiyn: 50_000,
+        serviceLocation: "takeaway",
+      }],
+    });
+
+    expect(ticket).toContain("СТОЛ 3");
+    expect(ticket).toContain("ЗАКАЗ №7");
+    expect(ticket).toContain("15.10.2026 · 16:00");
+    expect(ticket).toContain("Лагман · Большой");
+    expect(ticket).toContain("2 ×");
+    expect(ticket).toContain("НА ВЫНОС");
+  });
+
+  it("uses the order number as the headline when no table is assigned", () => {
+    expect(kitchenReceipt({ ...order(1), tableNumber: null })).toContain('class="kitchen-location">ЗАКАЗ №7');
+  });
 });
 
 describe("customerReceiptHeightMm", () => {
