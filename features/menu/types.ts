@@ -6,6 +6,7 @@ export type MenuItem = {
   isQuick: boolean;
   requiresServiceLocation: boolean;
   preparesInKitchen: boolean;
+  isContainer: boolean;
   variants: MenuItemVariant[];
 };
 

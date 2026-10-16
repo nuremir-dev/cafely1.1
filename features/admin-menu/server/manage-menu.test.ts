@@ -66,7 +66,7 @@ describe("menu administration service", () => {
 
     await expect(getAdminMenuData()).resolves.toEqual({
       categories: [{ id: categoryId, name: "Напитки", sortOrder: 2, isActive: false }],
-      items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false, isQuick: false, requiresServiceLocation: false, preparesInKitchen: false, variants: [] }],
+      items: [{ id: itemId, categoryId, name: "Чай", priceTyiyn: 4_000, sortOrder: 3, isActive: false, isQuick: false, requiresServiceLocation: false, preparesInKitchen: false, isContainer: false, variants: [] }],
     });
   });
 
@@ -101,7 +101,7 @@ describe("menu administration service", () => {
       error: null,
     });
     const updatedQuery = mutationQuery({
-      data: { id: itemId, category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, requires_service_location: true, prepares_in_kitchen: true },
+      data: { id: itemId, category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, requires_service_location: true, prepares_in_kitchen: true, is_container: true },
       error: null,
     });
     const variantsQuery = listQuery({ data: [], error: null });
@@ -116,9 +116,9 @@ describe("menu administration service", () => {
     mocks.createSupabaseAdminClient.mockReturnValue(client);
 
     await expect(createMenuItem(itemInput)).resolves.toMatchObject({ priceTyiyn: 4_000, isActive: true });
-    await expect(updateMenuItem(itemId, { ...itemInput, priceTyiyn: 4_500, isActive: false, requiresServiceLocation: true, preparesInKitchen: true })).resolves.toMatchObject({ priceTyiyn: 4_500, isActive: false, requiresServiceLocation: true, preparesInKitchen: true });
-    expect(createdQuery.insert).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_000, sort_order: 3, is_active: true, is_quick: false, requires_service_location: false, prepares_in_kitchen: false });
-    expect(updatedQuery.update).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, is_quick: false, requires_service_location: true, prepares_in_kitchen: true });
+    await expect(updateMenuItem(itemId, { ...itemInput, priceTyiyn: 4_500, isActive: false, requiresServiceLocation: true, preparesInKitchen: true, isContainer: true })).resolves.toMatchObject({ priceTyiyn: 4_500, isActive: false, requiresServiceLocation: true, preparesInKitchen: true, isContainer: true });
+    expect(createdQuery.insert).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_000, sort_order: 3, is_active: true, is_quick: false, requires_service_location: false, prepares_in_kitchen: false, is_container: false });
+    expect(updatedQuery.update).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, is_quick: false, requires_service_location: true, prepares_in_kitchen: true, is_container: true });
   });
 
   it("rejects malformed values before database access", async () => {
@@ -135,6 +135,17 @@ describe("menu administration service", () => {
       code: "INVALID_REQUEST",
       status: 400,
       message: "Указанная категория не существует.",
+    });
+  });
+
+  it("explains why a second container cannot be assigned", async () => {
+    const query = mutationQuery({ data: null, error: { code: "23505", constraint: "menu_items_one_container_idx" } });
+    mocks.createSupabaseAdminClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) });
+
+    await expect(createMenuItem({ ...itemInput, isContainer: true })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      status: 409,
+      message: "В меню уже назначен контейнер.",
     });
   });
 });

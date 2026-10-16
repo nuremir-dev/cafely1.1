@@ -50,7 +50,7 @@ describe("getActiveMenuCatalog", () => {
         {
           id: "main",
           name: "Основные",
-          items: [{ id: "lagman", categoryId: "main", name: "Лагман", priceTyiyn: 25_000, isQuick: false, requiresServiceLocation: false, preparesInKitchen: true, variants: [{ id: "large", name: "Большой", priceTyiyn: 31_000 }] }],
+          items: [{ id: "lagman", categoryId: "main", name: "Лагман", priceTyiyn: 25_000, isQuick: false, requiresServiceLocation: false, preparesInKitchen: true, isContainer: false, variants: [{ id: "large", name: "Большой", priceTyiyn: 31_000 }] }],
         },
         { id: "drinks", name: "Напитки", items: [] },
       ],

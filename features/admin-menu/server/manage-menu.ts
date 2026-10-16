@@ -21,6 +21,7 @@ const menuItemSchema = z.object({
   isQuick: z.boolean().default(false),
   requiresServiceLocation: z.boolean().default(false),
   preparesInKitchen: z.boolean().default(false),
+  isContainer: z.boolean().default(false),
   variants: z.array(z.object({
     name: z.string().trim().min(1).max(100),
     priceTyiyn: z.int().min(0).max(2_147_483_647),
@@ -46,6 +47,7 @@ type MenuItemRow = {
   is_quick: boolean;
   requires_service_location: boolean;
   prepares_in_kitchen: boolean;
+  is_container: boolean;
 };
 type VariantRow = { id: string; menu_item_id: string; name: string; price_tyiyn: number; sort_order: number; is_active: boolean };
 
@@ -55,7 +57,7 @@ export async function getAdminMenuData(): Promise<AdminMenuData> {
     supabase.from("categories").select("id, name, sort_order, is_active").order("sort_order").order("name"),
     supabase
       .from("menu_items")
-      .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen")
+      .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen, is_container")
       .order("sort_order")
       .order("name"),
     createSupabaseAdminClient().from("menu_item_variants").select("id, menu_item_id, name, price_tyiyn, sort_order, is_active").order("sort_order").order("name"),
@@ -117,8 +119,9 @@ export async function createMenuItem(input: unknown): Promise<AdminMenuItem> {
       is_quick: value.isQuick,
       requires_service_location: value.requiresServiceLocation,
       prepares_in_kitchen: value.preparesInKitchen,
+      is_container: value.isContainer,
     })
-    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen")
+    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen, is_container")
     .single();
 
   if (error) throw toDatabaseError(error, "Не удалось создать блюдо.");
@@ -140,9 +143,10 @@ export async function updateMenuItem(id: string, input: unknown): Promise<AdminM
       is_quick: value.isQuick,
       requires_service_location: value.requiresServiceLocation,
       prepares_in_kitchen: value.preparesInKitchen,
+      is_container: value.isContainer,
     })
     .eq("id", id)
-    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen")
+    .select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen, is_container")
     .single();
 
   if (error) throw toDatabaseError(error, "Не удалось обновить блюдо.");
@@ -168,7 +172,8 @@ function assertUuid(id: string) {
   }
 }
 
-function toDatabaseError(error: { code?: string }, fallbackMessage: string): ApiError | { code?: string } {
+function toDatabaseError(error: { code?: string; constraint?: string }, fallbackMessage: string): ApiError | { code?: string; constraint?: string } {
+  if (error.constraint === "menu_items_one_container_idx") return new ApiError("INVALID_REQUEST", 409, "В меню уже назначен контейнер.");
   if (error.code === "23505") return new ApiError("INVALID_REQUEST", 409, "Такое название уже существует.");
   if (error.code === "23503") return new ApiError("INVALID_REQUEST", 400, "Указанная категория не существует.");
   if (error.code === "PGRST116") return new ApiError("INVALID_REQUEST", 404, "Запись не найдена.");
@@ -191,7 +196,7 @@ async function replaceVariants(menuItemId: string, variants: Array<{ name: strin
 async function getMenuItem(id: string): Promise<AdminMenuItem> {
   const supabase = createSupabaseAdminClient();
   const [itemResult, variantsResult] = await Promise.all([
-    supabase.from("menu_items").select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen").eq("id", id).single(),
+    supabase.from("menu_items").select("id, category_id, name, price_tyiyn, sort_order, is_active, is_quick, requires_service_location, prepares_in_kitchen, is_container").eq("id", id).single(),
     supabase.from("menu_item_variants").select("id, menu_item_id, name, price_tyiyn, sort_order, is_active").eq("menu_item_id", id).order("sort_order").order("name"),
   ]);
   if (itemResult.error || variantsResult.error || !itemResult.data) throw itemResult.error ?? variantsResult.error ?? new Error("Блюдо не найдено.");
@@ -209,6 +214,7 @@ function toMenuItem(row: MenuItemRow, variants: VariantRow[] = []): AdminMenuIte
     isQuick: Boolean(row.is_quick),
     requiresServiceLocation: Boolean(row.requires_service_location),
     preparesInKitchen: Boolean(row.prepares_in_kitchen),
+    isContainer: Boolean(row.is_container),
     variants: variants.map((variant) => ({ id: variant.id, name: variant.name, priceTyiyn: variant.price_tyiyn, sortOrder: variant.sort_order, isActive: variant.is_active })),
   };
 }

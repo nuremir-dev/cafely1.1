@@ -55,7 +55,9 @@ export function PosScreen() {
   const [showUnknownPurchase, setShowUnknownPurchase] = useState(false);
   const [unknownPurchaseAmount, setUnknownPurchaseAmount] = useState("");
   const [locationPickerItemId, setLocationPickerItemId] = useState<string | null>(null);
-  const [variantPicker, setVariantPicker] = useState<{ item: MenuItem; serviceLocation: "hall" | "takeaway" } | null>(null);
+  const [variantPicker, setVariantPicker] = useState<{ item: MenuItem; serviceLocation?: "hall" | "takeaway" } | null>(null);
+  const [containerPrompt, setContainerPrompt] = useState<MenuItem | null>(null);
+  const [containerPicker, setContainerPicker] = useState<MenuItem | null>(null);
   const [cashShift, setCashShift] = useState<CashShift | null | undefined>(undefined);
   const [shiftName, setShiftName] = useState("");
   const [isOpeningShift, setIsOpeningShift] = useState(false);
@@ -264,6 +266,10 @@ export function PosScreen() {
       ),
     );
   }, [catalog, categoryId, query]);
+  const containerItem = useMemo(
+    () => catalog?.categories.flatMap((category) => category.items).find((item) => item.isContainer && item.variants.length > 0) ?? null,
+    [catalog],
+  );
   const freeTables = useMemo(
     () =>
       Array.from({ length: 12 }, (_, index) => index + 1).filter(
@@ -520,8 +526,7 @@ export function PosScreen() {
       window.removeEventListener("online", synchronizePendingOrders);
     };
   }, [completePrintedOrder, syncLocalOrder, syncPendingKitchenPrint, syncTableAssignment]);
-  const createOrder = useCallback(async () => {
-    if (isCreating) return;
+  const createLocalOrder = useCallback(() => {
     activeOrderRevision.current += 1;
     const localOrderId = `local-order-${crypto.randomUUID()}`;
     const localOrder: CachedPosOrder = {
@@ -541,14 +546,19 @@ export function PosScreen() {
     setOrders((current) => [toActiveOrderSummary(localOrder), ...current]);
     cachedOrdersRef.current = { ...cachedOrdersRef.current, [localOrder.id]: localOrder };
     setCachedOrders(cachedOrdersRef.current);
-    setIsCreating(true);
     setNotice(null);
     setShowTables(false);
     setNotice("Новый заказ создан локально.");
     setError(null);
-    setIsCreating(false);
     window.setTimeout(() => void syncLocalOrder(localOrder).catch(() => undefined), 750);
-  }, [isCreating, syncLocalOrder]);
+    return localOrder;
+  }, [syncLocalOrder]);
+  const createOrder = useCallback(() => {
+    if (isCreating) return;
+    setIsCreating(true);
+    createLocalOrder();
+    setIsCreating(false);
+  }, [createLocalOrder, isCreating]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.code !== "KeyQ" && event.code !== "KeyN") || event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
@@ -609,8 +619,21 @@ export function PosScreen() {
       void syncTableAssignment(local).catch(() => undefined);
   }
   function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined, serviceLocation?: "hall" | "takeaway") {
-    if (!active || active.pendingCompletion) return;
-    queueItemChange(active.id, selectMenuItem(item, variant, serviceLocation), 1);
+    const order = activeOrderRef.current;
+    if (!order || order.pendingCompletion) return;
+    queueItemChange(order.id, selectMenuItem(item, variant, serviceLocation), 1);
+  }
+  function ensureOrderForCatalog() {
+    const current = activeOrderRef.current;
+    if (current && !current.pendingCompletion) return current;
+    if (orders.length > 0 || Object.keys(cachedOrdersRef.current).length > 0) {
+      setNotice("Выберите открытый заказ.");
+      return null;
+    }
+    return createLocalOrder();
+  }
+  function offerContainer() {
+    if (containerItem) setContainerPrompt(containerItem);
   }
   function addUnknownPurchase() {
     if (!active || active.pendingCompletion || isTransitioning) return;
@@ -1109,10 +1132,12 @@ export function PosScreen() {
                   const singleVariant =
                     item.variants.length === 1 ? item.variants[0] : undefined;
                   const choosingLocation = locationPickerItemId === item.id;
+                  const canChooseItem = Boolean(active && !active.pendingCompletion) || (!active && orders.length === 0);
                   const chooseCard = () => {
-                    if (!active || active.pendingCompletion) return;
+                    if (!ensureOrderForCatalog()) return;
                     if (!item.requiresServiceLocation) {
-                      addItem(item, undefined);
+                      if (hasMultipleVariants) setVariantPicker({ item });
+                      else addItem(item, singleVariant);
                       return;
                     }
                     setLocationPickerItemId((current) =>
@@ -1126,24 +1151,25 @@ export function PosScreen() {
                       return;
                     }
                     addItem(item, singleVariant, serviceLocation);
+                    if (serviceLocation === "takeaway") offerContainer();
                   };
                   return (
                     <div
                       key={item.id}
                       role="button"
-                      tabIndex={active && !active.pendingCompletion ? 0 : -1}
+                      tabIndex={canChooseItem ? 0 : -1}
                       aria-expanded={choosingLocation}
                       onClick={chooseCard}
                       onKeyDown={(event) => {
                         if (
                           (event.key === "Enter" || event.key === " ") &&
-                          active
+                          canChooseItem
                         ) {
                           event.preventDefault();
                           chooseCard();
                         }
                       }}
-                      className={`min-h-22 cursor-pointer rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:-translate-y-px hover:border-primary hover:bg-teal-50 ${!active ? "cursor-not-allowed opacity-40" : ""}`}
+                      className={`min-h-22 cursor-pointer rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:-translate-y-px hover:border-primary hover:bg-teal-50 ${!canChooseItem ? "cursor-not-allowed opacity-40" : ""}`}
                     >
                       <div className="block w-full text-left">
                         <span className="block font-semibold text-slate-900">
@@ -1418,9 +1444,11 @@ export function PosScreen() {
             <h2 id="variant-picker-title" className="text-lg font-bold text-slate-950">
               {variantPicker.item.name}: выберите характеристику
             </h2>
-            <p className="mt-2 text-sm text-slate-600">
-              Место: {variantPicker.serviceLocation === "hall" ? "зал" : "на вынос"}
-            </p>
+            {variantPicker.serviceLocation && (
+              <p className="mt-2 text-sm text-slate-600">
+                Место: {variantPicker.serviceLocation === "hall" ? "зал" : "на вынос"}
+              </p>
+            )}
             <div className="mt-5 flex flex-col gap-2">
               {variantPicker.item.variants.map((variant, index) => (
                 <button
@@ -1428,6 +1456,7 @@ export function PosScreen() {
                   key={variant.id}
                   onClick={() => {
                     addItem(variantPicker.item, variant, variantPicker.serviceLocation);
+                    if (variantPicker.serviceLocation === "takeaway") offerContainer();
                     setVariantPicker(null);
                   }}
                   className={`flex w-full min-w-0 items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition ${variantButtonStyles[index % variantButtonStyles.length]}`}
@@ -1442,6 +1471,33 @@ export function PosScreen() {
                 Отмена
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {containerPrompt && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="container-prompt-title">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="container-prompt-title" className="text-lg font-bold text-slate-950">Добавить контейнер?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">К блюду на вынос можно добавить контейнер.</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setContainerPrompt(null)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Нет</button>
+              <button type="button" onClick={() => { setContainerPicker(containerPrompt); setContainerPrompt(null); }} className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500">Да</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {containerPicker && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="container-picker-title">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="container-picker-title" className="text-lg font-bold text-slate-950">{containerPicker.name}: выберите характеристику</h2>
+            <div className="mt-5 flex flex-col gap-2">
+              {containerPicker.variants.map((variant, index) => (
+                <button type="button" key={variant.id} onClick={() => { addItem(containerPicker, variant); setContainerPicker(null); }} className={`flex w-full min-w-0 items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition ${variantButtonStyles[index % variantButtonStyles.length]}`}>
+                  <span className="truncate">{variant.name}</span><span className="shrink-0 text-base font-bold">{formatSom(variant.priceTyiyn)}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-6 flex justify-end"><button type="button" onClick={() => setContainerPicker(null)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Отмена</button></div>
           </div>
         </div>
       )}
@@ -1742,6 +1798,7 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
     isQuick: false,
     requiresServiceLocation: false,
     preparesInKitchen: item.preparesInKitchen,
+    isContainer: false,
     variants: [],
     selectedVariantId: item.menuItemVariantId,
     serviceLocation: item.serviceLocation,

@@ -15,6 +15,7 @@ export type AdminMenuItem = {
   isQuick: boolean;
   requiresServiceLocation: boolean;
   preparesInKitchen: boolean;
+  isContainer: boolean;
   variants: AdminMenuItemVariant[];
 };
 
