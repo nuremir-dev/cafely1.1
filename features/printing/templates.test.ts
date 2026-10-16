@@ -36,7 +36,7 @@ describe("kitchenReceiptHeightMm", () => {
       ...order(1),
       items: [{
         menuItemId: "lagman",
-        itemName: "Лагман · Большой",
+        itemName: "Лагман · Большой · На вынос",
         unitPriceTyiyn: 25_000,
         quantity: 2,
         lineTotalTyiyn: 50_000,
@@ -48,8 +48,9 @@ describe("kitchenReceiptHeightMm", () => {
     expect(ticket).toContain("ЗАКАЗ №7");
     expect(ticket).toContain("15.10.2026 · 16:00");
     expect(ticket).toContain("Лагман · Большой");
+    expect(ticket).not.toContain("Лагман · Большой · На вынос");
     expect(ticket).toContain("2 ×");
-    expect(ticket).toContain("НА ВЫНОС");
+    expect(ticket.match(/НА ВЫНОС/g)).toHaveLength(1);
   });
 
   it("uses the order number as the headline when no table is assigned", () => {

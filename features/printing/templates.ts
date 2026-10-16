@@ -1,6 +1,7 @@
 import type { CreatedOrder } from "@/features/orders/types";
 
 const escapeHtml = (value: string) => value.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] ?? char);
+const kitchenItemName = (value: string) => value.replace(/\s*·\s*(?:Зал|На вынос)\s*$/iu, "");
 const som = (tyiyn: number) => `${(tyiyn / 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} сом`;
 const time = (value: string) => new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Bishkek", dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 const kitchenDate = (value: string) => new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Bishkek", dateStyle: "short" }).format(new Date(value));
@@ -28,7 +29,7 @@ export function customerReceiptHeightMm(order: CreatedOrder): number {
 export function kitchenReceipt(order: CreatedOrder, options?: { cancellation?: boolean }): string {
   const location = order.tableNumber ? `СТОЛ ${order.tableNumber}` : `ЗАКАЗ №${order.orderNumber}`;
   const title = options?.cancellation ? "ОТМЕНА" : "КУХНЯ";
-  return shell(`<p class="kitchen-title${options?.cancellation ? " kitchen-cancellation" : ""}">${title}</p><p class="kitchen-location">${location}</p><p class="kitchen-order">ЗАКАЗ №${order.orderNumber}</p><p class="kitchen-datetime">${kitchenDate(order.createdAt)} · ${kitchenTime(order.createdAt)}</p><hr>${order.items.map((item) => `<section class="kitchen-item"><div class="kitchen-item-name">${escapeHtml(item.itemName)}</div><div class="kitchen-item-meta"><strong class="kitchen-quantity">${item.quantity} ×</strong><span class="kitchen-location-label">${item.serviceLocation === "takeaway" ? "НА ВЫНОС" : "ЗАЛ"}</span></div></section>`).join("")}`);
+  return shell(`<p class="kitchen-title${options?.cancellation ? " kitchen-cancellation" : ""}">${title}</p><p class="kitchen-location">${location}</p><p class="kitchen-order">ЗАКАЗ №${order.orderNumber}</p><p class="kitchen-datetime">${kitchenDate(order.createdAt)} · ${kitchenTime(order.createdAt)}</p><hr>${order.items.map((item) => `<section class="kitchen-item"><div class="kitchen-item-name">${escapeHtml(kitchenItemName(item.itemName))}</div><div class="kitchen-item-meta"><strong class="kitchen-quantity">${item.quantity} ×</strong><span class="kitchen-location-label">${item.serviceLocation === "takeaway" ? "НА ВЫНОС" : "ЗАЛ"}</span></div></section>`).join("")}`);
 }
 
 /**
