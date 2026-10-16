@@ -23,10 +23,10 @@ type ShiftRow = {
   sold_item_count: number;
 };
 
-type AutoCloseStaleShiftRow = ShiftRow & { outcome: "closed" | "blocked" };
+type AutoCloseStaleShiftRow = ShiftRow & { outcome: "closed" };
 
 export type AutoCloseStaleShiftResult = {
-  outcome: "none" | "closed" | "blocked";
+  outcome: "none" | "closed";
   shift: CashShift | null;
 };
 

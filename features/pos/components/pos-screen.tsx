@@ -19,7 +19,7 @@ type ActiveOrdersResponse = { data: ActiveOrder[] };
 type ActiveOrderResponse = { data: ActiveOrder };
 type PrintableResponse = { data: CreatedOrder };
 type AutoCloseStaleShiftResponse = {
-  data: { outcome: "none" | "closed" | "blocked"; shift: CashShift | null };
+  data: { outcome: "none" | "closed"; shift: CashShift | null };
 };
 type TableMapResponse = {
   data: { cells: number[]; rows: number; columns: number };
@@ -65,7 +65,6 @@ export function PosScreen() {
   const [shiftName, setShiftName] = useState("");
   const [isOpeningShift, setIsOpeningShift] = useState(false);
   const [shiftError, setShiftError] = useState<string | null>(null);
-  const [staleShiftBlock, setStaleShiftBlock] = useState<CashShift | null>(null);
   const [tableMap, setTableMap] = useState({
     cells: Array.from({ length: 12 }, (_, index) => index),
     rows: 6,
@@ -106,11 +105,6 @@ export function PosScreen() {
       const autoClosePayload: unknown = await autoCloseResponse.json();
       if (!autoCloseResponse.ok || !isAutoCloseStaleShiftResponse(autoClosePayload))
         throw new Error(message(autoClosePayload, "Не удалось проверить незакрытую смену."));
-      if (autoClosePayload.data.outcome === "blocked") {
-        setStaleShiftBlock(autoClosePayload.data.shift);
-        setCashShift(null);
-        return;
-      }
       if (autoClosePayload.data.outcome === "closed" && autoClosePayload.data.shift) {
         const shift = autoClosePayload.data.shift;
         setNotice(`Смена за ${formatBusinessDate(shift.businessDate)}, открытая ${shift.openedBy}, автоматически закрыта в 00:00.`);
@@ -119,7 +113,6 @@ export function PosScreen() {
       const payload: unknown = await response.json();
       if (!response.ok || !isShiftDashboardResponse(payload))
         throw new Error(message(payload, "Не удалось проверить смену."));
-      setStaleShiftBlock(null);
       setCashShift(payload.data.currentShift);
     })()
       .catch((cause) => {
@@ -1050,9 +1043,6 @@ export function PosScreen() {
 
   if (cashShift === undefined) {
     return <p className="rounded-2xl bg-white p-6 text-sm text-slate-600 shadow-sm">Проверяем смену…</p>;
-  }
-  if (staleShiftBlock) {
-    return <section className="mx-auto mt-10 max-w-md rounded-[1.7rem] border border-amber-200 bg-amber-50 p-6 shadow-[0_10px_34px_rgba(56,72,65,0.1)]"><p className="text-sm font-semibold text-amber-900">Незакрытая смена</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">Сначала завершите вчерашние заказы</h1><p className="mt-3 text-sm leading-6 text-slate-700">Смена за {formatBusinessDate(staleShiftBlock.businessDate)}, открытая {staleShiftBlock.openedBy}, содержит незавершённые заказы. Завершите или отмените их, затем закройте смену вручную на экране «Смены».</p></section>;
   }
   if (!cashShift) {
     return (

@@ -34,12 +34,9 @@ describe("autoCloseStaleCashShift", () => {
     expect(rpc).toHaveBeenCalledWith("auto_close_stale_cafeline_cash_shift");
   });
 
-  it("returns a blocking stale shift without changing it", async () => {
-    mocks.createSupabaseAdminClient.mockReturnValue({ rpc: vi.fn().mockResolvedValue({ data: [{ ...row, closed_by: null, closed_at: null, close_mode: "manual", status: "open", outcome: "blocked" }], error: null }) });
+  it("returns no result when there is no stale shift", async () => {
+    mocks.createSupabaseAdminClient.mockReturnValue({ rpc: vi.fn().mockResolvedValue({ data: [], error: null }) });
 
-    await expect(autoCloseStaleCashShift()).resolves.toMatchObject({
-      outcome: "blocked",
-      shift: { status: "open", closeMode: "manual" },
-    });
+    await expect(autoCloseStaleCashShift()).resolves.toEqual({ outcome: "none", shift: null });
   });
 });

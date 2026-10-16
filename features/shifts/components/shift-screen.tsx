@@ -81,7 +81,7 @@ export function ShiftScreen() {
             <p className="mt-3 text-sm text-slate-600">Открыта {formatDateTime(currentShift.openedAt)}: {currentShift.openedBy}.</p>
             <label className="mt-5 block text-sm font-semibold text-slate-700">Кто закрывает смену<input value={closeName} onChange={(event) => setCloseName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void closeShift(); }} maxLength={100} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 outline-none focus:border-primary" placeholder="Имя сотрудника" /></label>
             <button type="button" onClick={() => void closeShift()} disabled={isClosing} className="mt-5 w-full rounded-xl bg-slate-900 px-4 py-3 font-bold text-white disabled:opacity-50">{isClosing ? "Закрываем…" : "Закрыть смену"}</button>
-            <p className="mt-3 text-xs leading-5 text-slate-500">Смена не закроется, пока в ней есть незавершённые заказы.</p>
+            <p className="mt-3 text-xs leading-5 text-slate-500">Незавершённые заказы будут перенесены в следующую открытую смену.</p>
           </>}
         </div>
       </aside>

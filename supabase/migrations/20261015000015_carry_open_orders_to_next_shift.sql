@@ -1,0 +1,118 @@
+alter table public.orders
+  add column carried_over_from_shift_id uuid references public.cash_shifts(id) on delete restrict;
+
+create index orders_carried_over_from_shift_id_idx
+  on public.orders (carried_over_from_shift_id);
+
+create or replace function public.close_cafeline_cash_shift(p_shift_id uuid, p_closed_by text)
+returns table (shift_id uuid, business_date date, opened_by text, opened_at timestamptz, closed_by text, closed_at timestamptz, status text, sales_total_tyiyn integer, sold_item_count integer)
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_shift public.cash_shifts%rowtype; v_total integer; v_count integer;
+begin
+  if p_shift_id is null or length(btrim(coalesce(p_closed_by, ''))) = 0 or length(btrim(p_closed_by)) > 100 then
+    raise exception 'invalid shift close input' using errcode = '22023';
+  end if;
+
+  select * into v_shift
+  from public.cash_shifts as cash_shift
+  where cash_shift.id = p_shift_id
+  for update;
+  if not found then raise exception 'shift not found' using errcode = 'P0002'; end if;
+  if v_shift.status = 'closed' then
+    return query select v_shift.id, v_shift.business_date, v_shift.opened_by, v_shift.opened_at, v_shift.closed_by, v_shift.closed_at, v_shift.status, v_shift.sales_total_tyiyn, v_shift.sold_item_count;
+    return;
+  end if;
+
+  select coalesce(sum(order_row.total_tyiyn), 0)::integer into v_total
+  from public.orders as order_row
+  where order_row.shift_id = p_shift_id and order_row.status = 'completed';
+  select coalesce(sum(item.quantity), 0)::integer into v_count
+  from public.order_items as item
+  join public.orders as order_row on order_row.id = item.order_id
+  where order_row.shift_id = p_shift_id and order_row.status = 'completed';
+
+  update public.cash_shifts as cash_shift
+  set status = 'closed', closed_by = btrim(p_closed_by), closed_at = now(), close_mode = 'manual', sales_total_tyiyn = v_total, sold_item_count = v_count
+  where cash_shift.id = p_shift_id
+  returning * into v_shift;
+  return query select v_shift.id, v_shift.business_date, v_shift.opened_by, v_shift.opened_at, v_shift.closed_by, v_shift.closed_at, v_shift.status, v_shift.sales_total_tyiyn, v_shift.sold_item_count;
+end;
+$$;
+
+create or replace function public.open_cafeline_cash_shift(p_opened_by text)
+returns table (shift_id uuid, business_date date, opened_by text, opened_at timestamptz, closed_by text, closed_at timestamptz, status text, sales_total_tyiyn integer, sold_item_count integer, created boolean)
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_shift public.cash_shifts%rowtype; v_business_date date;
+begin
+  if length(btrim(coalesce(p_opened_by, ''))) = 0 or length(btrim(p_opened_by)) > 100 then
+    raise exception 'invalid shift opener' using errcode = '22023';
+  end if;
+
+  v_business_date := timezone('Asia/Bishkek', now())::date;
+  select * into v_shift
+  from public.cash_shifts as cash_shift
+  where cash_shift.business_date = v_business_date and cash_shift.status = 'open'
+  for update;
+  if found then
+    return query select v_shift.id, v_shift.business_date, v_shift.opened_by, v_shift.opened_at, v_shift.closed_by, v_shift.closed_at, v_shift.status, v_shift.sales_total_tyiyn, v_shift.sold_item_count, false;
+    return;
+  end if;
+
+  insert into public.cash_shifts (business_date, opened_by)
+  values (v_business_date, btrim(p_opened_by))
+  returning * into v_shift;
+
+  update public.orders as order_row
+  set carried_over_from_shift_id = coalesce(order_row.carried_over_from_shift_id, order_row.shift_id),
+      shift_id = v_shift.id
+  where order_row.status = 'open'
+    and order_row.shift_id is not null
+    and order_row.shift_id <> v_shift.id
+    and exists (
+      select 1 from public.cash_shifts as previous_shift
+      where previous_shift.id = order_row.shift_id and previous_shift.status = 'closed'
+    );
+
+  return query select v_shift.id, v_shift.business_date, v_shift.opened_by, v_shift.opened_at, v_shift.closed_by, v_shift.closed_at, v_shift.status, v_shift.sales_total_tyiyn, v_shift.sold_item_count, true;
+end;
+$$;
+
+create or replace function public.auto_close_stale_cafeline_cash_shift()
+returns table (
+  shift_id uuid,
+  business_date date,
+  opened_by text,
+  opened_at timestamptz,
+  closed_by text,
+  closed_at timestamptz,
+  close_mode text,
+  status text,
+  sales_total_tyiyn integer,
+  sold_item_count integer,
+  outcome text
+)
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_shift public.cash_shifts%rowtype; v_total integer; v_count integer; v_today date; v_midnight timestamptz;
+begin
+  v_today := timezone('Asia/Bishkek', now())::date;
+  select * into v_shift from public.cash_shifts as cash_shift where cash_shift.status = 'open' and cash_shift.business_date < v_today for update;
+  if not found then return; end if;
+
+  select coalesce(sum(order_row.total_tyiyn), 0)::integer into v_total from public.orders as order_row where order_row.shift_id = v_shift.id and order_row.status = 'completed';
+  select coalesce(sum(item.quantity), 0)::integer into v_count from public.order_items as item join public.orders as order_row on order_row.id = item.order_id where order_row.shift_id = v_shift.id and order_row.status = 'completed';
+
+  v_midnight := ((v_shift.business_date + 1)::timestamp at time zone 'Asia/Bishkek');
+  update public.cash_shifts as cash_shift
+  set status = 'closed', closed_by = 'Система (автозакрытие)', closed_at = v_midnight, close_mode = 'overnight_auto', sales_total_tyiyn = v_total, sold_item_count = v_count
+  where cash_shift.id = v_shift.id
+  returning * into v_shift;
+  return query select v_shift.id, v_shift.business_date, v_shift.opened_by, v_shift.opened_at, v_shift.closed_by, v_shift.closed_at, v_shift.close_mode, v_shift.status, v_shift.sales_total_tyiyn, v_shift.sold_item_count, 'closed'::text;
+end;
+$$;
+
+revoke all on function public.close_cafeline_cash_shift(uuid, text) from public, anon, authenticated;
+revoke all on function public.open_cafeline_cash_shift(text) from public, anon, authenticated;
+revoke all on function public.auto_close_stale_cafeline_cash_shift() from public, anon, authenticated;
+grant execute on function public.close_cafeline_cash_shift(uuid, text) to service_role;
+grant execute on function public.open_cafeline_cash_shift(text) to service_role;
+grant execute on function public.auto_close_stale_cafeline_cash_shift() to service_role;
