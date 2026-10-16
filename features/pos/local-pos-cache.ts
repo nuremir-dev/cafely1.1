@@ -17,6 +17,7 @@ export type PendingKitchenPrint = {
     menuItemVariantId: string | null;
     quantity: number;
     serviceLocation: "hall" | "takeaway";
+    kitchenComment?: string | null;
   }>;
 };
 export type CachedPosOrder = ActiveOrder & {
@@ -24,6 +25,8 @@ export type CachedPosOrder = ActiveOrder & {
   syncKey?: string;
   syncError?: string;
   pendingTableNumber?: number | null;
+  pendingServiceLocation?: "hall" | "takeaway";
+  pendingCommentLineIds?: string[];
   customerReceiptPrintedAt?: string;
   pendingCompletion?: boolean;
   completionSyncError?: string;

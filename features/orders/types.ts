@@ -2,6 +2,7 @@ export type OrderItemSnapshot = {
   menuItemId: string | null;
   serviceLocation?: "hall" | "takeaway";
   itemName: string;
+  kitchenComment?: string | null;
   unitPriceTyiyn: number;
   quantity: number;
   lineTotalTyiyn: number;
@@ -19,6 +20,7 @@ export type CreatedOrder = {
   id: string;
   orderNumber: number;
   tableNumber?: number | null;
+  serviceLocation?: "hall" | "takeaway";
   totalTyiyn: number;
   cashierName: string;
   createdAt: string;

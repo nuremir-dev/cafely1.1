@@ -57,10 +57,12 @@ export function PosScreen() {
   const [kitchenCancellationItem, setKitchenCancellationItem] = useState<ActiveOrder["items"][number] | null>(null);
   const [showUnknownPurchase, setShowUnknownPurchase] = useState(false);
   const [unknownPurchaseAmount, setUnknownPurchaseAmount] = useState("");
-  const [locationPickerItemId, setLocationPickerItemId] = useState<string | null>(null);
-  const [variantPicker, setVariantPicker] = useState<{ item: MenuItem; serviceLocation?: "hall" | "takeaway" } | null>(null);
+  const [variantPicker, setVariantPicker] = useState<{ item: MenuItem } | null>(null);
   const [containerPrompt, setContainerPrompt] = useState<MenuItem | null>(null);
   const [containerPicker, setContainerPicker] = useState<MenuItem | null>(null);
+  const [commentItem, setCommentItem] = useState<ActiveOrder["items"][number] | null>(null);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [showTakeawayConfirm, setShowTakeawayConfirm] = useState(false);
   const [cashShift, setCashShift] = useState<CashShift | null | undefined>(undefined);
   const [shiftName, setShiftName] = useState("");
   const [isOpeningShift, setIsOpeningShift] = useState(false);
@@ -297,7 +299,7 @@ export function PosScreen() {
       const response = await fetch("/api/active-orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ idempotencyKey: draft.syncKey, tableNumber: draft.tableNumber }),
+        body: JSON.stringify({ idempotencyKey: draft.syncKey, tableNumber: draft.tableNumber, serviceLocation: draft.serviceLocation ?? "hall" }),
       });
       const payload: unknown = await response.json();
       if (!response.ok || !isActiveOrderResponse(payload)) throw new Error(message(payload, "Не удалось синхронизировать заказ."));
@@ -306,11 +308,13 @@ export function PosScreen() {
         items: (cachedOrdersRef.current[draft.id] ?? draft).items,
         totalTyiyn: (cachedOrdersRef.current[draft.id] ?? draft).totalTyiyn,
         tableNumber: (cachedOrdersRef.current[draft.id] ?? draft).tableNumber,
+        serviceLocation: (cachedOrdersRef.current[draft.id] ?? draft).serviceLocation ?? "hall",
         hasKitchenTicket: (cachedOrdersRef.current[draft.id] ?? draft).hasKitchenTicket,
         customerReceiptPrintedAt: (cachedOrdersRef.current[draft.id] ?? draft).customerReceiptPrintedAt,
         pendingCompletion: (cachedOrdersRef.current[draft.id] ?? draft).pendingCompletion,
         completionSyncError: (cachedOrdersRef.current[draft.id] ?? draft).completionSyncError,
         pendingKitchenPrints: (cachedOrdersRef.current[draft.id] ?? draft).pendingKitchenPrints,
+        pendingCommentLineIds: (cachedOrdersRef.current[draft.id] ?? draft).pendingCommentLineIds,
         syncState: "synced",
         pendingTableNumber: payload.data.tableNumber === (cachedOrdersRef.current[draft.id] ?? draft).tableNumber
           ? undefined
@@ -362,6 +366,7 @@ export function PosScreen() {
         pendingCompletion: current.pendingCompletion,
         completionSyncError: current.completionSyncError,
         pendingKitchenPrints: current.pendingKitchenPrints,
+        pendingCommentLineIds: current.pendingCommentLineIds,
         syncState: "synced",
         pendingTableNumber: current.pendingTableNumber === payload.data.tableNumber ? undefined : current.pendingTableNumber,
       };
@@ -407,6 +412,27 @@ export function PosScreen() {
       throw cause;
     }
   }, [loadOrders]);
+  const syncDraftComment = useCallback(async (order: CachedPosOrder, clientLineId: string) => {
+    if (order.syncState !== "synced" || !order.pendingCommentLineIds?.includes(clientLineId)) return;
+    const line = order.items.find((item) => item.id === clientLineId);
+    try {
+      const response = await fetch(`/api/active-orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "save-draft-comment", clientLineId, kitchenComment: line?.kitchenComment ?? null }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) throw new Error(message(payload, "Не удалось сохранить комментарий для кухни."));
+      const current = cachedOrdersRef.current[order.id];
+      if (!current) return;
+      const next = { ...current, pendingCommentLineIds: current.pendingCommentLineIds?.filter((id) => id !== clientLineId) };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+      setCachedOrders(cachedOrdersRef.current);
+      if (activeOrderRef.current?.id === next.id) { activeOrderRef.current = next; setActive(next); }
+    } catch {
+      // The local line stays authoritative and this retry runs in the background.
+    }
+  }, []);
   const completePrintedOrder = useCallback(async (draft: CachedPosOrder) => {
     if (!draft.pendingCompletion || !draft.customerReceiptPrintedAt) return false;
     if (completingOrderIds.current.has(draft.id)) return false;
@@ -425,6 +451,7 @@ export function PosScreen() {
             menuItemVariantId: item.menuItemVariantId,
             quantity: item.quantity,
             ...(item.menuItemId !== null ? { serviceLocation: item.serviceLocation ?? "hall" } : {}),
+            ...(item.kitchenComment ? { kitchenComment: item.kitchenComment } : {}),
             ...(item.menuItemId === null ? { adHocAmountTyiyn: item.unitPriceTyiyn } : {}),
           })),
         }),
@@ -517,6 +544,9 @@ export function PosScreen() {
             void syncPendingKitchenPrint(order, pending).catch(() => undefined);
           continue;
         }
+        if (order.syncState === "synced" && order.pendingCommentLineIds?.length) {
+          for (const lineId of order.pendingCommentLineIds) void syncDraftComment(order, lineId);
+        }
         if (order.pendingTableNumber !== undefined && !order.syncKey) {
           void syncTableAssignment(order).catch(() => undefined);
           continue;
@@ -536,7 +566,7 @@ export function PosScreen() {
       window.clearInterval(timer);
       window.removeEventListener("online", synchronizePendingOrders);
     };
-  }, [completePrintedOrder, syncLocalOrder, syncPendingKitchenPrint, syncTableAssignment]);
+  }, [completePrintedOrder, syncDraftComment, syncLocalOrder, syncPendingKitchenPrint, syncTableAssignment]);
   const createLocalOrder = useCallback(() => {
     activeOrderRevision.current += 1;
     const localOrderId = `local-order-${crypto.randomUUID()}`;
@@ -544,6 +574,7 @@ export function PosScreen() {
       id: localOrderId,
       orderNumber: 0,
       tableNumber: null,
+      serviceLocation: "hall",
       totalTyiyn: 0,
       cashierName: "",
       createdAt: new Date().toISOString(),
@@ -611,7 +642,7 @@ export function PosScreen() {
     }
   }
   async function assignTable(tableNumber: number) {
-    if (!active || active.pendingCompletion || isTransitioning) return;
+    if (!active || active.serviceLocation === "takeaway" || active.pendingCompletion || isTransitioning) return;
     const local: CachedPosOrder = {
       ...active,
       tableNumber,
@@ -629,10 +660,55 @@ export function PosScreen() {
     if (local.syncState === "synced")
       void syncTableAssignment(local).catch(() => undefined);
   }
-  function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined, serviceLocation?: "hall" | "takeaway") {
+  function changeServiceLocation(serviceLocation: "hall" | "takeaway", confirmed = false) {
+    const current = activeOrderRef.current;
+    if (!current || current.pendingCompletion || current.serviceLocation === serviceLocation) return;
+    if (serviceLocation === "takeaway" && current.tableNumber && !confirmed) {
+      setShowTakeawayConfirm(true);
+      return;
+    }
+    const next: CachedPosOrder = {
+      ...current,
+      serviceLocation,
+      tableNumber: serviceLocation === "takeaway" ? null : current.tableNumber,
+      pendingTableNumber: serviceLocation === "takeaway" ? undefined : current.pendingTableNumber,
+      pendingServiceLocation: serviceLocation,
+    };
+    activeOrderRef.current = next;
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+    setCachedOrders(cachedOrdersRef.current);
+    setActive(next);
+    setOrders((orders) => orders.map((order) => order.id === next.id ? toActiveOrderSummary(next) : order));
+    setShowTables(false);
+    if (next.syncState !== "synced") return;
+    void fetch(`/api/active-orders/${next.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "set-service-location", serviceLocation }),
+    }).then(async (response) => {
+      const payload: unknown = await response.json();
+      if (!response.ok || !isActiveOrderResponse(payload)) throw new Error(message(payload, "Не удалось изменить режим заказа."));
+      const saved = cachedOrdersRef.current[next.id];
+      if (!saved) return;
+      const synced = { ...saved, ...payload.data, items: saved.items, totalTyiyn: saved.totalTyiyn, pendingServiceLocation: undefined, pendingTableNumber: payload.data.tableNumber === saved.tableNumber ? undefined : saved.pendingTableNumber };
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [synced.id]: synced };
+      setCachedOrders(cachedOrdersRef.current);
+      if (activeOrderRef.current?.id === synced.id) { activeOrderRef.current = synced; setActive(synced); }
+    }).catch((cause) => {
+      const saved = cachedOrdersRef.current[next.id];
+      if (saved?.pendingServiceLocation === serviceLocation) {
+        const reverted = { ...saved, serviceLocation: current.serviceLocation, tableNumber: current.tableNumber, pendingTableNumber: current.pendingTableNumber, pendingServiceLocation: undefined };
+        cachedOrdersRef.current = { ...cachedOrdersRef.current, [reverted.id]: reverted };
+        setCachedOrders(cachedOrdersRef.current);
+        if (activeOrderRef.current?.id === reverted.id) { activeOrderRef.current = reverted; setActive(reverted); }
+      }
+      setError(cause instanceof Error ? cause.message : "Не удалось изменить режим заказа.");
+    });
+  }
+  function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined) {
     const order = activeOrderRef.current;
     if (!order || order.pendingCompletion) return;
-    queueItemChange(order.id, selectMenuItem(item, variant, serviceLocation), 1);
+    queueItemChange(order.id, selectMenuItem(item, variant, order.serviceLocation ?? "hall"), 1);
   }
   function ensureOrderForCatalog() {
     const current = activeOrderRef.current;
@@ -735,6 +811,24 @@ export function PosScreen() {
     }
     queueItemChange(active.id, selectOrderItem(item), -item.quantity);
   }
+  function saveKitchenComment() {
+    const item = commentItem;
+    const order = activeOrderRef.current;
+    const kitchenComment = commentDraft.trim().slice(0, 280) || null;
+    if (!item || !order || item.sentQuantity > 0 || order.pendingCompletion) return;
+    const next = {
+      ...order,
+      items: order.items.map((candidate) => candidate.id === item.id ? { ...candidate, kitchenComment } : candidate),
+      pendingCommentLineIds: [...new Set([...(order.pendingCommentLineIds ?? []), item.id])],
+    };
+    activeOrderRef.current = next;
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+    setCachedOrders(cachedOrdersRef.current);
+    setActive(next);
+    setCommentItem(null);
+    setCommentDraft("");
+    void syncDraftComment(next, item.id);
+  }
   async function confirmKitchenCancellation() {
     const item = kitchenCancellationItem;
     if (!active || !item || item.menuItemId === null || active.pendingCompletion || isTransitioning) return;
@@ -750,6 +844,7 @@ export function PosScreen() {
           menuItemVariantId: item.menuItemVariantId,
           quantity: item.quantity,
           serviceLocation: item.serviceLocation ?? "hall",
+          kitchenComment: item.kitchenComment ?? null,
         }],
       };
       await printKitchenReceiptSnapshot(
@@ -819,6 +914,7 @@ export function PosScreen() {
           menuItemVariantId: item.menuItemVariantId,
           quantity: repeat ? item.quantity : item.quantity - item.sentQuantity,
           serviceLocation: item.serviceLocation ?? "hall",
+          kitchenComment: item.kitchenComment ?? null,
         }] : []),
       };
       if (!pending.items.length) return;
@@ -863,6 +959,7 @@ export function PosScreen() {
           line.menuItemId === item.id &&
           line.menuItemVariantId === item.selectedVariantId &&
           line.serviceLocation === item.serviceLocation &&
+          !line.kitchenComment &&
           line.sentQuantity === 0,
       );
       let items = current.items;
@@ -880,6 +977,7 @@ export function PosScreen() {
             lineTotalTyiyn: item.priceTyiyn * delta,
             addedAt: new Date().toISOString(),
             preparesInKitchen: item.preparesInKitchen,
+            kitchenComment: null,
           },
           ...items,
         ];
@@ -1142,34 +1240,21 @@ export function PosScreen() {
                   const hasMultipleVariants = item.variants.length > 1;
                   const singleVariant =
                     item.variants.length === 1 ? item.variants[0] : undefined;
-                  const choosingLocation = locationPickerItemId === item.id;
                   const canChooseItem = Boolean(active && !active.pendingCompletion) || (!active && orders.length === 0);
                   const chooseCard = () => {
                     if (!ensureOrderForCatalog()) return;
-                    if (!item.requiresServiceLocation) {
-                      if (hasMultipleVariants) setVariantPicker({ item });
-                      else addItem(item, singleVariant);
-                      return;
-                    }
-                    setLocationPickerItemId((current) =>
-                        current === item.id ? null : item.id,
-                      );
-                  };
-                  const chooseLocation = (serviceLocation: "hall" | "takeaway") => {
-                    setLocationPickerItemId(null);
                     if (hasMultipleVariants) {
-                      setVariantPicker({ item, serviceLocation });
+                      setVariantPicker({ item });
                       return;
                     }
-                    addItem(item, singleVariant, serviceLocation);
-                    if (serviceLocation === "takeaway") offerContainer();
+                    addItem(item, singleVariant);
+                    if ((activeOrderRef.current?.serviceLocation ?? "hall") === "takeaway" && !item.isContainer) offerContainer();
                   };
                   return (
                     <div
                       key={item.id}
                       role="button"
                       tabIndex={canChooseItem ? 0 : -1}
-                      aria-expanded={choosingLocation}
                       onClick={chooseCard}
                       onKeyDown={(event) => {
                         if (
@@ -1180,7 +1265,7 @@ export function PosScreen() {
                           chooseCard();
                         }
                       }}
-                      className={`min-h-22 cursor-pointer rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:-translate-y-px hover:border-primary hover:bg-teal-50 ${!canChooseItem ? "cursor-not-allowed opacity-40" : ""}`}
+                      className={`min-h-22 cursor-pointer rounded-xl border border-slate-200 p-3 text-left transition hover:-translate-y-px hover:border-primary ${active?.serviceLocation === "takeaway" ? "bg-amber-50 hover:bg-amber-100" : "bg-white hover:bg-teal-50"} ${!canChooseItem ? "cursor-not-allowed opacity-40" : ""}`}
                     >
                       <div className="block w-full text-left">
                         <span className="block font-semibold text-slate-900">
@@ -1199,7 +1284,7 @@ export function PosScreen() {
                                 </span>
                               </span>
                             ))}
-                            <span className="mt-0.5 text-xs">{choosingLocation ? "⌃" : "⌄"}</span>
+                            <span className="mt-0.5 text-xs">⌄</span>
                           </span>
                         ) : (
                           <span className="mt-2 block text-base font-bold text-primary-strong">
@@ -1209,16 +1294,6 @@ export function PosScreen() {
                           </span>
                         )}
                       </div>
-                      {choosingLocation && (
-                        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3" onClick={(event) => event.stopPropagation()}>
-                          <button type="button" onClick={() => chooseLocation("hall")} className="rounded-xl bg-emerald-100 px-2 py-2.5 text-sm font-bold text-emerald-950 transition hover:bg-emerald-200">
-                            Зал
-                          </button>
-                          <button type="button" onClick={() => chooseLocation("takeaway")} className="rounded-xl bg-amber-100 px-2 py-2.5 text-sm font-bold text-amber-950 transition hover:bg-amber-200">
-                            На вынос
-                          </button>
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -1233,15 +1308,29 @@ export function PosScreen() {
         <aside className="min-w-0 xl:sticky xl:top-3 xl:self-start">
           <div className="flex max-h-[calc(100dvh-8.5rem)] flex-col rounded-[1.7rem] border border-white/80 bg-white/90 p-4 shadow-[0_10px_34px_rgba(56,72,65,0.08)] backdrop-blur-xl sm:p-5">
             <div className="relative shrink-0 border-b border-slate-100 pb-3">
-              <button
-                type="button"
-                onClick={() => setShowTables((value) => !value)}
-                disabled={!active || isOrderLocked}
-                className="flex items-center gap-2 text-left text-xl font-bold tracking-[-0.04em] text-slate-950 disabled:opacity-50"
-              >
-                {active ? activeTitle(active) : "Активный заказ"}
-                <span className="text-base text-primary">⌄</span>
-              </button>
+              <div className="flex items-start justify-between gap-3 pr-12">
+                <div>
+                  {active?.serviceLocation !== "takeaway" && (
+                    <button
+                      type="button"
+                      onClick={() => setShowTables((value) => !value)}
+                      disabled={!active || isOrderLocked}
+                      className="flex items-center gap-2 text-left text-xl font-bold tracking-[-0.04em] text-slate-950 disabled:opacity-50"
+                    >
+                      {active ? activeTitle(active) : "Активный заказ"}
+                      <span className="text-base text-primary">⌄</span>
+                    </button>
+                  )}
+                  {active?.serviceLocation === "takeaway" && <p className="text-xl font-bold tracking-[-0.04em] text-slate-950">Заказ на вынос</p>}
+                  {!active && <p className="text-xl font-bold tracking-[-0.04em] text-slate-950">Активный заказ</p>}
+                  {active && (
+                    <div className="mt-2 inline-flex overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-1" role="group" aria-label="Режим обслуживания заказа">
+                      <button type="button" onClick={() => changeServiceLocation("hall")} disabled={isOrderLocked} className={`rounded-lg px-3 py-1.5 text-sm font-bold transition disabled:opacity-40 ${active.serviceLocation !== "takeaway" ? "bg-white text-slate-950 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}>Зал</button>
+                      <button type="button" onClick={() => changeServiceLocation("takeaway")} disabled={isOrderLocked} className={`rounded-lg px-3 py-1.5 text-sm font-bold transition disabled:opacity-40 ${active.serviceLocation === "takeaway" ? "bg-amber-400 text-amber-950 shadow-sm" : "text-slate-500 hover:bg-amber-50 hover:text-amber-950"}`}><span aria-hidden="true">⇥ </span>Вынос</button>
+                    </div>
+                  )}
+                </div>
+              </div>
               {active && (
                 <p className="mt-1 text-sm text-slate-500">
                   {active.pendingCompletion
@@ -1267,7 +1356,7 @@ export function PosScreen() {
                   +
                 </button>
               )}
-              {showTables && (
+              {showTables && active?.serviceLocation !== "takeaway" && (
                 <TableMap
                   map={tableMap}
                   freeTables={freeTables}
@@ -1306,6 +1395,7 @@ export function PosScreen() {
                             changeUnknownPurchaseQuantity(item, 1);
                         }}
                         onRemove={() => void removeItem(item)}
+                        onComment={item.menuItemId && item.preparesInKitchen && item.sentQuantity === 0 ? () => { setCommentItem(item); setCommentDraft(item.kitchenComment ?? ""); } : undefined}
                         onSend={item.menuItemId && item.preparesInKitchen ? () =>
                           void printLocalItemsToKitchen(
                             [item],
@@ -1374,6 +1464,18 @@ export function PosScreen() {
           </div>
         </aside>
       </div>
+      {showTakeawayConfirm && active && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="takeaway-confirm-title">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="takeaway-confirm-title" className="text-lg font-bold text-slate-950">Перевести заказ на вынос?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Стол {active.tableNumber} будет освобождён. После первой отправки на кухню режим заказа изменить нельзя.</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setShowTakeawayConfirm(false)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Отмена</button>
+              <button type="button" onClick={() => { setShowTakeawayConfirm(false); changeServiceLocation("takeaway", true); }} className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500">На вынос</button>
+            </div>
+          </div>
+        </div>
+      )}
       {kitchenCancellationItem && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4"
@@ -1455,19 +1557,14 @@ export function PosScreen() {
             <h2 id="variant-picker-title" className="text-lg font-bold text-slate-950">
               {variantPicker.item.name}: выберите характеристику
             </h2>
-            {variantPicker.serviceLocation && (
-              <p className="mt-2 text-sm text-slate-600">
-                Место: {variantPicker.serviceLocation === "hall" ? "зал" : "на вынос"}
-              </p>
-            )}
             <div className="mt-5 flex flex-col gap-2">
               {variantPicker.item.variants.map((variant, index) => (
                 <button
                   type="button"
                   key={variant.id}
                   onClick={() => {
-                    addItem(variantPicker.item, variant, variantPicker.serviceLocation);
-                    if (variantPicker.serviceLocation === "takeaway") offerContainer();
+                    addItem(variantPicker.item, variant);
+                    if ((activeOrderRef.current?.serviceLocation ?? "hall") === "takeaway" && !variantPicker.item.isContainer) offerContainer();
                     setVariantPicker(null);
                   }}
                   className={`flex w-full min-w-0 items-center justify-between gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold transition ${variantButtonStyles[index % variantButtonStyles.length]}`}
@@ -1510,6 +1607,20 @@ export function PosScreen() {
             </div>
             <div className="mt-6 flex justify-end"><button type="button" onClick={() => setContainerPicker(null)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Отмена</button></div>
           </div>
+        </div>
+      )}
+      {commentItem && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="kitchen-comment-title">
+          <form onSubmit={(event) => { event.preventDefault(); saveKitchenComment(); }} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="kitchen-comment-title" className="text-lg font-bold text-slate-950">Комментарий для кухни</h2>
+            <p className="mt-1 text-sm text-slate-600">{displayItemName(commentItem.itemName)}</p>
+            <textarea autoFocus value={commentDraft} onChange={(event) => setCommentDraft(event.target.value.slice(0, 280))} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); saveKitchenComment(); } }} maxLength={280} rows={3} placeholder="Например, один упаковать с собой" className="mt-4 w-full resize-none rounded-xl border border-slate-300 px-3 py-3 text-base outline-none focus:border-primary" />
+            <p className="mt-1 text-right text-xs text-slate-400">{commentDraft.length}/280</p>
+            <div className="mt-5 flex justify-end gap-3">
+              <button type="button" onClick={() => { setCommentItem(null); setCommentDraft(""); }} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Отмена</button>
+              <button className="rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white hover:bg-primary-strong">Сохранить</button>
+            </div>
+          </form>
         </div>
       )}
       {showUnknownPurchase && active && (
@@ -1557,6 +1668,7 @@ type OrderCardProps = {
   onDecrease: () => void;
   onIncrease: () => void;
   onRemove: () => void;
+  onComment?: () => void;
   onSend?: () => void;
 };
 
@@ -1568,6 +1680,7 @@ function OrderCard({
   onDecrease,
   onIncrease,
   onRemove,
+  onComment,
   onSend,
 }: OrderCardProps) {
   return (
@@ -1582,6 +1695,16 @@ function OrderCard({
       >
         ↗
       </button>}
+      {onComment && <button
+        type="button"
+        onClick={onComment}
+        disabled={disabled}
+        className="absolute right-16 top-2 grid size-6 place-items-center rounded-md text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
+        aria-label={`Добавить комментарий к блюду ${item.itemName}`}
+        title="Комментарий для кухни"
+      >
+        ◦
+      </button>}
       <button
         type="button"
         onClick={onRemove}
@@ -1593,7 +1716,8 @@ function OrderCard({
       </button>
       <div className="min-w-0">
         <p className="text-[11px] font-medium text-slate-400">Блюдо</p>
-        <h3 className="truncate font-bold">{item.itemName}</h3>
+        <h3 className="truncate text-sm font-bold">{displayItemName(item.itemName)}</h3>
+        {item.kitchenComment && <p className="mt-0.5 truncate text-xs text-slate-500">Комментарий: {item.kitchenComment}</p>}
         <p className="mt-0.5 text-xs text-slate-500">
           {formatSom(item.unitPriceTyiyn)} × {item.quantity}
         </p>
@@ -1753,11 +1877,15 @@ function orderTitle(order: ActiveOrderSummary) {
 function activeTitle(order: ActiveOrder) {
   return order.tableNumber ? `Стол ${order.tableNumber}` : "Новый заказ";
 }
+function displayItemName(value: string) {
+  return value.replace(/\s*·\s*(?:Зал|На вынос)\s*$/iu, "");
+}
 function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
   return {
     id: order.id,
     orderNumber: order.orderNumber,
     tableNumber: order.tableNumber,
+    serviceLocation: order.serviceLocation,
     totalTyiyn: order.totalTyiyn,
     cashierName: order.cashierName,
     createdAt: order.createdAt,
@@ -1765,6 +1893,7 @@ function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
       menuItemId: item.menuItemId,
       serviceLocation: item.serviceLocation,
       itemName: item.itemName,
+      kitchenComment: item.kitchenComment,
       unitPriceTyiyn: item.unitPriceTyiyn,
       quantity: item.quantity,
       lineTotalTyiyn: item.lineTotalTyiyn,
@@ -1779,24 +1908,24 @@ function toLocalKitchenReceipt(
   printItems: PendingKitchenPrint["items"],
 ): CreatedOrder {
   const items = printItems.map((printItem) => {
-    const source = sourceItems.find((item) => item.menuItemId === printItem.menuItemId && item.menuItemVariantId === printItem.menuItemVariantId && item.serviceLocation === printItem.serviceLocation);
+    const source = sourceItems.find((item) => item.menuItemId === printItem.menuItemId && item.menuItemVariantId === printItem.menuItemVariantId && item.serviceLocation === printItem.serviceLocation && (item.kitchenComment ?? null) === (printItem.kitchenComment ?? null));
     if (!source) throw new Error("Не удалось подготовить локальный кухонный чек.");
-    return { menuItemId: source.menuItemId, serviceLocation: printItem.serviceLocation, itemName: source.itemName, unitPriceTyiyn: source.unitPriceTyiyn, quantity: printItem.quantity, lineTotalTyiyn: source.unitPriceTyiyn * printItem.quantity };
+    return { menuItemId: source.menuItemId, serviceLocation: printItem.serviceLocation, itemName: source.itemName, kitchenComment: source.kitchenComment, unitPriceTyiyn: source.unitPriceTyiyn, quantity: printItem.quantity, lineTotalTyiyn: source.unitPriceTyiyn * printItem.quantity };
   });
-  return { id: order.id, orderNumber: order.orderNumber, tableNumber: order.tableNumber, totalTyiyn: items.reduce((sum, item) => sum + item.lineTotalTyiyn, 0), cashierName: order.cashierName, createdAt: order.createdAt, items, printJobs: [], created: false };
+  return { id: order.id, orderNumber: order.orderNumber, tableNumber: order.tableNumber, serviceLocation: order.serviceLocation, totalTyiyn: items.reduce((sum, item) => sum + item.lineTotalTyiyn, 0), cashierName: order.cashierName, createdAt: order.createdAt, items, printJobs: [], created: false };
 }
 function selectMenuItem(
   item: MenuItem,
   variant: MenuItem["variants"][number] | undefined,
   serviceLocation?: "hall" | "takeaway",
 ): SelectedMenuItem {
-  const itemName = variant ? `${item.name} · ${variant.name}` : item.name;
+  const itemName = variant && item.variants.length > 1 ? `${item.name} · ${variant.name}` : item.name;
   return {
     ...item,
     priceTyiyn: variant?.priceTyiyn ?? item.priceTyiyn,
     selectedVariantId: variant?.id ?? null,
     serviceLocation,
-    displayName: serviceLocation ? `${itemName} · ${serviceLocation === "hall" ? "Зал" : "На вынос"}` : itemName,
+    displayName: itemName,
   };
 }
 function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
@@ -1813,7 +1942,7 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
     variants: [],
     selectedVariantId: item.menuItemVariantId,
     serviceLocation: item.serviceLocation,
-    displayName: item.itemName,
+    displayName: displayItemName(item.itemName),
   };
 }
 function toActiveOrderSummary(order: ActiveOrder): ActiveOrderSummary {
@@ -1821,6 +1950,7 @@ function toActiveOrderSummary(order: ActiveOrder): ActiveOrderSummary {
     id: order.id,
     orderNumber: order.orderNumber,
     tableNumber: order.tableNumber,
+    serviceLocation: order.serviceLocation,
     totalTyiyn: order.totalTyiyn,
     cashierName: order.cashierName,
     createdAt: order.createdAt,

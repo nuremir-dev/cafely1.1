@@ -1,5 +1,5 @@
 import { requireApiSession } from "@/features/auth/guards";
-import { cancelActiveOrderItem, changeActiveOrderItem, completeActiveOrder, completeLocalCart, deleteEmptyActiveOrder, getActiveOrder, moveActiveOrder, printLocalCartCancellationToKitchen, printLocalCartToKitchen, sendActiveOrderItemToKitchen, sendActiveOrderToKitchen } from "@/features/orders/server/active-orders";
+import { cancelActiveOrderItem, changeActiveOrderItem, completeActiveOrder, completeLocalCart, deleteEmptyActiveOrder, getActiveOrder, moveActiveOrder, printLocalCartCancellationToKitchen, printLocalCartToKitchen, saveActiveOrderDraftComment, sendActiveOrderItemToKitchen, sendActiveOrderToKitchen, setActiveOrderServiceLocation } from "@/features/orders/server/active-orders";
 import { ApiError, errorResponse } from "@/lib/http/api-error";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
@@ -21,6 +21,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const body: unknown = await request.json();
     if (!body || typeof body !== "object" || !("action" in body) || typeof body.action !== "string") throw new ApiError("INVALID_REQUEST", 400, "Переданы некорректные данные заказа.");
     if (body.action === "move-table") return Response.json({ data: await moveActiveOrder(id, body) });
+    if (body.action === "set-service-location") return Response.json({ data: await setActiveOrderServiceLocation(id, body) });
+    if (body.action === "save-draft-comment") {
+      await saveActiveOrderDraftComment(id, body);
+      return Response.json({ data: { id } });
+    }
     if (body.action === "change-item") return Response.json({ data: await changeActiveOrderItem(id, body) });
     if (body.action === "send-item-to-kitchen") return Response.json({ data: await sendActiveOrderItemToKitchen(id, body) });
     if (body.action === "send-to-kitchen") return Response.json({ data: await sendActiveOrderToKitchen(id, body) });

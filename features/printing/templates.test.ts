@@ -31,9 +31,10 @@ describe("kitchenReceiptHeightMm", () => {
     expect(kitchenReceipt(order(1), { cancellation: true })).toContain("ОТМЕНА");
   });
 
-  it("prints table, order details, quantity, and service location for the kitchen", () => {
+  it("prints one order-level service mode, the table, and a kitchen comment", () => {
     const ticket = kitchenReceipt({
       ...order(1),
+      serviceLocation: "hall",
       items: [{
         menuItemId: "lagman",
         itemName: "Лагман · Большой · На вынос",
@@ -41,6 +42,7 @@ describe("kitchenReceiptHeightMm", () => {
         quantity: 2,
         lineTotalTyiyn: 50_000,
         serviceLocation: "takeaway",
+        kitchenComment: "Без специй",
       }],
     });
 
@@ -50,11 +52,15 @@ describe("kitchenReceiptHeightMm", () => {
     expect(ticket).toContain("Лагман · Большой");
     expect(ticket).not.toContain("Лагман · Большой · На вынос");
     expect(ticket).toContain("2 ×");
-    expect(ticket.match(/НА ВЫНОС/g)).toHaveLength(1);
+    expect(ticket).toContain("ЗАЛ");
+    expect(ticket).not.toContain("НА ВЫНОС");
+    expect(ticket).toContain("Без специй");
   });
 
-  it("uses the order number as the headline when no table is assigned", () => {
-    expect(kitchenReceipt({ ...order(1), tableNumber: null })).toContain('class="kitchen-location">ЗАКАЗ №7');
+  it("shows takeaway once at the top without a table", () => {
+    const ticket = kitchenReceipt({ ...order(1), tableNumber: null, serviceLocation: "takeaway" });
+    expect(ticket).toContain('class="kitchen-location">НА ВЫНОС');
+    expect(ticket).not.toContain("СТОЛ");
   });
 });
 

@@ -14,7 +14,8 @@ const menuItemVariantIdSchema = z.uuid().nullable();
 const orderItemIdSchema = z.uuid();
 const idempotencyKeySchema = z.uuid();
 const serviceLocationSchema = z.enum(["hall", "takeaway"]);
-const knownCartItemSchema = z.object({ menuItemId: menuItemIdSchema, menuItemVariantId: menuItemVariantIdSchema, quantity: z.int().min(1).max(1000), serviceLocation: serviceLocationSchema.optional() });
+const kitchenCommentSchema = z.string().trim().max(280).nullable().optional();
+const knownCartItemSchema = z.object({ menuItemId: menuItemIdSchema, menuItemVariantId: menuItemVariantIdSchema, quantity: z.int().min(1).max(1000), serviceLocation: serviceLocationSchema.optional(), kitchenComment: kitchenCommentSchema });
 const unknownCartItemSchema = z.object({ menuItemId: z.null(), menuItemVariantId: z.null(), quantity: z.int().min(1).max(1000), adHocAmountTyiyn: z.int().min(1).max(100_000_000) });
 const localCartItemsSchema = z.array(z.union([knownCartItemSchema, unknownCartItemSchema])).min(1).max(200);
 const kitchenCartItemsSchema = z.array(knownCartItemSchema).min(1).max(200);
@@ -24,22 +25,23 @@ export type ActiveOrder = {
   id: string;
   orderNumber: number;
   tableNumber: number | null;
+  serviceLocation: "hall" | "takeaway";
   totalTyiyn: number;
   cashierName: string;
   createdAt: string;
   items: ActiveOrderItem[];
   hasKitchenTicket: boolean;
 };
-export type ActiveOrderSummary = Pick<ActiveOrder, "id" | "orderNumber" | "tableNumber" | "totalTyiyn" | "cashierName" | "createdAt">;
+export type ActiveOrderSummary = Pick<ActiveOrder, "id" | "orderNumber" | "tableNumber" | "serviceLocation" | "totalTyiyn" | "cashierName" | "createdAt">;
 
-type OrderRow = { id: string; order_number: number; table_number: number | null; total_tyiyn: number; cashier_name: string; created_at: string };
-type ItemRow = { id: string; menu_item_id: string | null; menu_item_variant_id: string | null; service_location: "hall" | "takeaway" | null; item_name: string; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: "kitchen" | "counter" | "beverage" };
+type OrderRow = { id: string; order_number: number; table_number: number | null; service_location: "hall" | "takeaway"; total_tyiyn: number; cashier_name: string; created_at: string };
+type ItemRow = { id: string; menu_item_id: string | null; menu_item_variant_id: string | null; service_location: "hall" | "takeaway" | null; item_name: string; kitchen_comment: string | null; unit_price_tyiyn: number; quantity: number; sent_quantity: number; line_total_tyiyn: number; added_at: string; fulfillment_type: "kitchen" | "counter" | "beverage" };
 type PrintJobRow = { id: string; type: "customer" | "kitchen"; status: "pending" | "processing" | "submitted" | "failed"; attempts: number; last_error: string | null };
 
 export async function listActiveOrders(): Promise<ActiveOrderSummary[]> {
   const { data, error } = await createSupabaseAdminClient()
     .from("orders")
-    .select("id, order_number, table_number, total_tyiyn, cashier_name, created_at")
+    .select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at")
     .eq("status", "open")
     .order("created_at", { ascending: true });
   if (error) throw error;
@@ -54,7 +56,7 @@ export async function listActiveOrderDetails(): Promise<ActiveOrder[]> {
   const supabase = createSupabaseAdminClient();
   const { data: orders, error: ordersError } = await supabase
     .from("orders")
-    .select("id, order_number, table_number, total_tyiyn, cashier_name, created_at")
+    .select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at")
     .eq("status", "open")
     .order("created_at", { ascending: true });
   if (ordersError) throw ordersError;
@@ -62,7 +64,7 @@ export async function listActiveOrderDetails(): Promise<ActiveOrder[]> {
   if (orderRows.length === 0) return [];
   const orderIds = orderRows.map((order) => order.id);
   const [itemsResult, ticketsResult] = await Promise.all([
-    supabase.from("order_items").select("order_id, id, menu_item_id, menu_item_variant_id, service_location, item_name, unit_price_tyiyn, quantity, sent_quantity, line_total_tyiyn, added_at, fulfillment_type").in("order_id", orderIds).order("added_at", { ascending: false }),
+    supabase.from("order_items").select("order_id, id, menu_item_id, menu_item_variant_id, service_location, item_name, kitchen_comment, unit_price_tyiyn, quantity, sent_quantity, line_total_tyiyn, added_at, fulfillment_type").in("order_id", orderIds).order("added_at", { ascending: false }),
     supabase.from("kitchen_tickets").select("order_id").in("order_id", orderIds),
   ]);
   if (itemsResult.error || ticketsResult.error)
@@ -84,8 +86,8 @@ export async function getActiveOrder(id: string): Promise<ActiveOrder> {
   if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
   const supabase = createSupabaseAdminClient();
   const [orderResult, itemsResult, ticketResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).eq("status", "open").maybeSingle(),
-    supabase.from("order_items").select("id, menu_item_id, menu_item_variant_id, service_location, item_name, unit_price_tyiyn, quantity, sent_quantity, line_total_tyiyn, added_at, fulfillment_type").eq("order_id", id).order("added_at", { ascending: false }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).eq("status", "open").maybeSingle(),
+    supabase.from("order_items").select("id, menu_item_id, menu_item_variant_id, service_location, item_name, kitchen_comment, unit_price_tyiyn, quantity, sent_quantity, line_total_tyiyn, added_at, fulfillment_type").eq("order_id", id).order("added_at", { ascending: false }),
     supabase.from("kitchen_tickets").select("id").eq("order_id", id).limit(1),
   ]);
   if (orderResult.error || itemsResult.error || ticketResult.error) throw orderResult.error ?? itemsResult.error ?? ticketResult.error;
@@ -99,12 +101,13 @@ export async function getActiveOrder(id: string): Promise<ActiveOrder> {
 }
 
 export async function openActiveOrder(input: unknown, session: Session): Promise<ActiveOrder> {
-  const parsed = z.object({ idempotencyKey: idempotencyKeySchema, tableNumber: tableNumberSchema.nullish() }).safeParse(input);
+  const parsed = z.object({ idempotencyKey: idempotencyKeySchema, tableNumber: tableNumberSchema.nullish(), serviceLocation: serviceLocationSchema.default("hall") }).safeParse(input);
   if (!parsed.success) throw invalidRequest();
   const { data, error } = await createSupabaseAdminClient().rpc("open_cafeline_table_order", {
     p_idempotency_key: parsed.data.idempotencyKey,
     p_cashier_name: session.cashierName,
     p_table_number: parsed.data.tableNumber ?? null,
+    p_service_location: parsed.data.serviceLocation,
   });
   if (error) throw mapRpcError(error, "Этот стол уже занят.");
   const row = (data as Array<{ order_id: string }> | null)?.[0];
@@ -113,7 +116,7 @@ export async function openActiveOrder(input: unknown, session: Session): Promise
   // order-items query so the cashier can start adding dishes immediately.
   const { data: order, error: orderError } = await createSupabaseAdminClient()
     .from("orders")
-    .select("id, order_number, table_number, total_tyiyn, cashier_name, created_at")
+    .select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at")
     .eq("id", row.order_id)
     .eq("status", "open")
     .single();
@@ -128,6 +131,30 @@ export async function moveActiveOrder(id: string, input: unknown): Promise<Activ
   const { error } = await createSupabaseAdminClient().rpc("move_cafeline_table_order", { p_order_id: id, p_table_number: parsed.data.tableNumber });
   if (error) throw mapRpcError(error, "Этот стол уже занят.");
   return getActiveOrder(id);
+}
+
+export async function setActiveOrderServiceLocation(id: string, input: unknown): Promise<ActiveOrder> {
+  if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
+  const parsed = z.object({ serviceLocation: serviceLocationSchema }).safeParse(input);
+  if (!parsed.success) throw invalidRequest();
+  const { error } = await createSupabaseAdminClient().rpc("set_cafeline_order_service_location", {
+    p_order_id: id,
+    p_service_location: parsed.data.serviceLocation,
+  });
+  if (error) throw mapRpcError(error, "Нельзя изменить режим заказа после отправки на кухню.");
+  return getActiveOrder(id);
+}
+
+export async function saveActiveOrderDraftComment(id: string, input: unknown): Promise<void> {
+  if (!orderIdSchema.safeParse(id).success) throw invalidRequest();
+  const parsed = z.object({ clientLineId: z.string().min(1).max(120), kitchenComment: kitchenCommentSchema }).safeParse(input);
+  if (!parsed.success) throw invalidRequest();
+  const { error } = await createSupabaseAdminClient().rpc("save_cafeline_order_draft_comment", {
+    p_order_id: id,
+    p_client_line_id: parsed.data.clientLineId,
+    p_kitchen_comment: parsed.data.kitchenComment?.trim() || null,
+  });
+  if (error) throw mapRpcError(error, "Не удалось сохранить комментарий для кухни.");
 }
 
 export async function changeActiveOrderItem(id: string, input: unknown): Promise<ActiveOrder> {
@@ -211,8 +238,8 @@ export async function sendActiveOrderToKitchen(id: string, input: unknown): Prom
   const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал кухонную заявку.");
   const [orderResult, itemsResult, jobResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
-    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, kitchen_comment, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Кухонная заявка сохранена, но не удалось подготовить печать.");
@@ -229,8 +256,8 @@ export async function sendActiveOrderItemToKitchen(id: string, input: unknown): 
   const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал кухонную заявку.");
   const [orderResult, itemsResult, jobResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
-    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, kitchen_comment, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Блюдо сохранено, но не удалось подготовить печать.");
@@ -245,8 +272,8 @@ export async function completeActiveOrder(id: string): Promise<CreatedOrder> {
   const result = (data as Array<{ print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал клиентский чек.");
   const [orderResult, itemsResult, jobResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
-    supabase.from("order_items").select("menu_item_id, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("order_id", id).order("id", { ascending: true }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("order_items").select("menu_item_id, item_name, kitchen_comment, unit_price_tyiyn, quantity, line_total_tyiyn").eq("order_id", id).order("id", { ascending: true }),
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Заказ завершён, но не удалось подготовить чек.");
@@ -267,8 +294,8 @@ export async function completeLocalCart(id: string, input: unknown): Promise<Cre
   const result = (data as Array<{ print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал клиентский чек.");
   const [orderResult, itemsResult, jobResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
-    supabase.from("order_items").select("menu_item_id, service_location, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("order_id", id).order("id", { ascending: true }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("order_items").select("menu_item_id, service_location, item_name, kitchen_comment, unit_price_tyiyn, quantity, line_total_tyiyn").eq("order_id", id).order("id", { ascending: true }),
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Корзина сохранена, но не удалось подготовить чек.");
@@ -298,8 +325,8 @@ export async function printLocalCartToKitchen(id: string, input: unknown): Promi
   const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал кухонную заявку.");
   const [orderResult, itemsResult, jobResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
-    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, kitchen_comment, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Кухонная заявка сохранена, но не удалось подготовить печать.");
@@ -332,8 +359,8 @@ export async function printLocalCartCancellationToKitchen(id: string, input: unk
   const result = (data as Array<{ ticket_id: string; print_job_id: string }> | null)?.[0];
   if (!result) throw new ApiError("INTERNAL_ERROR", 500, "Сервер не создал отмену для кухни.");
   const [orderResult, itemsResult, jobResult] = await Promise.all([
-    supabase.from("orders").select("id, order_number, table_number, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
-    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
+    supabase.from("orders").select("id, order_number, table_number, service_location, total_tyiyn, cashier_name, created_at").eq("id", id).single(),
+    supabase.from("kitchen_ticket_items").select("menu_item_id, item_name, kitchen_comment, unit_price_tyiyn, quantity, line_total_tyiyn").eq("ticket_id", result.ticket_id).order("id", { ascending: true }),
     supabase.from("print_jobs").select("id, type, status, attempts, last_error").eq("id", result.print_job_id).single(),
   ]);
   if (orderResult.error || itemsResult.error || jobResult.error || !orderResult.data || !jobResult.data) throw new ApiError("INTERNAL_ERROR", 500, "Отмена сохранена, но не удалось подтвердить печать.");
@@ -351,13 +378,13 @@ export async function printLocalCartCancellationToKitchen(id: string, input: unk
 }
 
 function toSummary(row: OrderRow): ActiveOrderSummary {
-  return { id: row.id, orderNumber: row.order_number, tableNumber: row.table_number, totalTyiyn: row.total_tyiyn, cashierName: row.cashier_name, createdAt: row.created_at };
+  return { id: row.id, orderNumber: row.order_number, tableNumber: row.table_number, serviceLocation: row.service_location ?? "hall", totalTyiyn: row.total_tyiyn, cashierName: row.cashier_name, createdAt: row.created_at };
 }
 function toActiveItem(row: ItemRow): ActiveOrderItem {
-  return { id: row.id, menuItemId: row.menu_item_id, menuItemVariantId: row.menu_item_variant_id, serviceLocation: row.service_location ?? undefined, itemName: row.item_name, unitPriceTyiyn: row.unit_price_tyiyn, quantity: row.quantity, sentQuantity: row.sent_quantity, lineTotalTyiyn: row.line_total_tyiyn, addedAt: row.added_at, preparesInKitchen: row.fulfillment_type === "kitchen" };
+  return { id: row.id, menuItemId: row.menu_item_id, menuItemVariantId: row.menu_item_variant_id, serviceLocation: row.service_location ?? undefined, itemName: row.item_name, kitchenComment: row.kitchen_comment, unitPriceTyiyn: row.unit_price_tyiyn, quantity: row.quantity, sentQuantity: row.sent_quantity, lineTotalTyiyn: row.line_total_tyiyn, addedAt: row.added_at, preparesInKitchen: row.fulfillment_type === "kitchen" };
 }
 function toPrintable(order: OrderRow, items: ItemRow[], jobs: PrintJobRow[]): CreatedOrder {
-  return { id: order.id, orderNumber: order.order_number, tableNumber: order.table_number, totalTyiyn: order.total_tyiyn, cashierName: order.cashier_name, createdAt: order.created_at, items: items.map((item) => ({ menuItemId: item.menu_item_id, serviceLocation: item.service_location ?? undefined, itemName: item.item_name, unitPriceTyiyn: item.unit_price_tyiyn, quantity: item.quantity, lineTotalTyiyn: item.line_total_tyiyn })), printJobs: jobs.map((job) => ({ id: job.id, type: job.type, status: job.status, attempts: job.attempts, lastError: job.last_error })), created: true };
+  return { id: order.id, orderNumber: order.order_number, tableNumber: order.table_number, serviceLocation: order.service_location ?? "hall", totalTyiyn: order.total_tyiyn, cashierName: order.cashier_name, createdAt: order.created_at, items: items.map((item) => ({ menuItemId: item.menu_item_id, serviceLocation: item.service_location ?? undefined, itemName: item.item_name, kitchenComment: item.kitchen_comment, unitPriceTyiyn: item.unit_price_tyiyn, quantity: item.quantity, lineTotalTyiyn: item.line_total_tyiyn })), printJobs: jobs.map((job) => ({ id: job.id, type: job.type, status: job.status, attempts: job.attempts, lastError: job.last_error })), created: true };
 }
 function invalidRequest() { return new ApiError("INVALID_REQUEST", 400, "Переданы некорректные данные заказа."); }
 function mapRpcError(error: { code?: string }, fallback: string): ApiError | { code?: string } {
