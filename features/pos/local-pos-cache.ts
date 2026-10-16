@@ -31,14 +31,36 @@ export type CachedPosOrder = ActiveOrder & {
   pendingCompletion?: boolean;
   completionSyncError?: string;
   pendingKitchenPrints?: PendingKitchenPrint[];
+  completedAt?: string;
 };
+export type CompletedPosOrder = CachedPosOrder & { completedAt: string };
 export type PosCache = {
   version: 1;
   activeOrderId: string | null;
   orders: CachedPosOrder[];
+  completedOrders?: CompletedPosOrder[];
   summaries: ActiveOrderSummary[];
   savedAt: number;
 };
+
+/**
+ * Reuse a draft before creating another empty POS tab. The browser cache is
+ * authoritative here, because a local order can be editable before it has an
+ * order number from the server.
+ */
+export function findReusableEmptyOrder(
+  orders: Iterable<CachedPosOrder>,
+): CachedPosOrder | null {
+  return [...orders]
+    .filter(
+      (order) =>
+        order.items.length === 0 &&
+        !order.pendingCompletion &&
+        !order.completedAt &&
+        !order.customerReceiptPrintedAt,
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0] ?? null;
+}
 
 function openDatabase(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);

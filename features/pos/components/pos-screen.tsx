@@ -9,7 +9,7 @@ import type {
   ActiveOrder,
   ActiveOrderSummary,
 } from "@/features/orders/server/active-orders";
-import { readPosCache, type CachedPosOrder, type PendingKitchenPrint, writePosCache } from "@/features/pos/local-pos-cache";
+import { findReusableEmptyOrder, readPosCache, type CachedPosOrder, type CompletedPosOrder, type PendingKitchenPrint, writePosCache } from "@/features/pos/local-pos-cache";
 import { getPrintStationId, printCustomerReceiptSnapshot, printKitchenReceiptSnapshot } from "@/features/printing/qz-client";
 import type { CashShift, ShiftDashboard } from "@/features/shifts/types";
 import { TableGrid } from "@/features/tables/components/table-grid";
@@ -45,6 +45,7 @@ export function PosScreen() {
   const [orders, setOrders] = useState<ActiveOrderSummary[]>([]);
   const [active, setActive] = useState<CachedPosOrder | null>(null);
   const [cachedOrders, setCachedOrders] = useState<Record<string, CachedPosOrder>>({});
+  const [completedOrders, setCompletedOrders] = useState<CompletedPosOrder[]>([]);
   const [cacheReady, setCacheReady] = useState(false);
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -63,6 +64,7 @@ export function PosScreen() {
   const [commentItem, setCommentItem] = useState<ActiveOrder["items"][number] | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [showTakeawayConfirm, setShowTakeawayConfirm] = useState(false);
+  const [showCompletionRecovery, setShowCompletionRecovery] = useState(false);
   const [cashShift, setCashShift] = useState<CashShift | null | undefined>(undefined);
   const [shiftName, setShiftName] = useState("");
   const [isOpeningShift, setIsOpeningShift] = useState(false);
@@ -90,10 +92,12 @@ export function PosScreen() {
     void readPosCache().then((cache) => {
       if (!cache) return;
       const restored = Object.fromEntries(cache.orders.map((order) => [order.id, order]));
+      const restoredCompleted = cache.completedOrders ?? [];
       cachedOrdersRef.current = restored;
       setCachedOrders(restored);
+      setCompletedOrders(restoredCompleted);
       setOrders(cache.summaries);
-      const selected = cache.activeOrderId ? restored[cache.activeOrderId] : cache.orders[0];
+      const selected = cache.activeOrderId ? restored[cache.activeOrderId] ?? restoredCompleted.find((order) => order.id === cache.activeOrderId) : cache.orders[0] ?? restoredCompleted[0];
       if (selected) {
         activeOrderRef.current = selected;
         setActive(selected);
@@ -124,10 +128,8 @@ export function PosScreen() {
   }, []);
 
   useEffect(() => {
-    const cached = Object.values(cachedOrders);
-    if (cached.length === 0) return;
-    void writePosCache({ version: 1, activeOrderId: active?.id ?? null, orders: cached, summaries: orders, savedAt: Date.now() });
-  }, [active?.id, cachedOrders, orders]);
+    void writePosCache({ version: 1, activeOrderId: active?.id ?? null, orders: Object.values(cachedOrders), completedOrders, summaries: orders, savedAt: Date.now() });
+  }, [active?.id, cachedOrders, completedOrders, orders]);
 
   const loadOrder = useCallback(
     async (id: string, revision = activeOrderRevision.current) => {
@@ -187,8 +189,10 @@ export function PosScreen() {
       cachedOrdersRef.current = nextCache;
       setCachedOrders(nextCache);
       setOrders(nextOrders.map(toActiveOrderSummary));
-      const id =
-        preferredId && nextCache[preferredId]
+      const completedActive = activeOrderRef.current?.completedAt ? activeOrderRef.current : null;
+      const id = completedActive
+        ? null
+        : preferredId && nextCache[preferredId]
           ? preferredId
           : activeOrderRef.current?.id && nextCache[activeOrderRef.current.id]
             ? activeOrderRef.current.id
@@ -200,7 +204,10 @@ export function PosScreen() {
           setActive(order);
         }
       }
-      else setActive(null);
+      else if (completedActive) {
+        activeOrderRef.current = completedActive;
+        setActive(completedActive);
+      } else setActive(null);
     },
     [],
   );
@@ -459,15 +466,24 @@ export function PosScreen() {
       const payload: unknown = await response.json();
       if (!response.ok || !isPrintableResponse(payload))
         throw new Error(message(payload, "Не удалось синхронизировать завершённый заказ."));
+      const completed: CompletedPosOrder = {
+        ...(cachedOrdersRef.current[order.id] ?? order),
+        syncState: "synced",
+        pendingCompletion: false,
+        completionSyncError: undefined,
+        pendingKitchenPrints: undefined,
+        completedAt: new Date().toISOString(),
+      };
       const remaining = { ...cachedOrdersRef.current };
       delete remaining[draft.id];
       delete remaining[order.id];
       cachedOrdersRef.current = remaining;
       setCachedOrders(remaining);
+      setCompletedOrders((current) => [completed, ...current.filter((entry) => entry.id !== completed.id && entry.id !== draft.id)]);
       setOrders((current) => current.filter((summary) => summary.id !== draft.id && summary.id !== order.id));
       if (activeOrderRef.current?.id === draft.id || activeOrderRef.current?.id === order.id) {
-        activeOrderRef.current = null;
-        setActive(null);
+        activeOrderRef.current = completed;
+        setActive(completed);
       }
       await loadOrders(null);
       setNotice("Заказ синхронизирован с сервером.");
@@ -597,6 +613,16 @@ export function PosScreen() {
   }, [syncLocalOrder]);
   const createOrder = useCallback(() => {
     if (isCreating) return;
+    const reusable = findReusableEmptyOrder(Object.values(cachedOrdersRef.current));
+    if (reusable) {
+      activeOrderRevision.current += 1;
+      activeOrderRef.current = reusable;
+      setActive(reusable);
+      setShowTables(false);
+      setNotice("Открыт существующий пустой заказ.");
+      setError(null);
+      return;
+    }
     setIsCreating(true);
     createLocalOrder();
     setIsCreating(false);
@@ -639,6 +665,19 @@ export function PosScreen() {
       );
     } finally {
       setIsTransitioning(false);
+    }
+  }
+  function selectCompletedOrder(order: CompletedPosOrder) {
+    if (isTransitioning) return;
+    activeOrderRevision.current += 1;
+    activeOrderRef.current = order;
+    setActive(order);
+  }
+  function dismissCompletedOrder(id: string) {
+    setCompletedOrders((current) => current.filter((order) => order.id !== id));
+    if (activeOrderRef.current?.id === id) {
+      activeOrderRef.current = null;
+      setActive(null);
     }
   }
   async function assignTable(tableNumber: number) {
@@ -707,12 +746,12 @@ export function PosScreen() {
   }
   function addItem(item: MenuItem, variant: MenuItem["variants"][number] | undefined) {
     const order = activeOrderRef.current;
-    if (!order || order.pendingCompletion) return;
+    if (!order || order.pendingCompletion || order.completedAt) return;
     queueItemChange(order.id, selectMenuItem(item, variant, order.serviceLocation ?? "hall"), 1);
   }
   function ensureOrderForCatalog() {
     const current = activeOrderRef.current;
-    if (current && !current.pendingCompletion) return current;
+    if (current && !current.pendingCompletion && !current.completedAt) return current;
     if (orders.length > 0 || Object.keys(cachedOrdersRef.current).length > 0) {
       setNotice("Выберите открытый заказ.");
       return null;
@@ -1058,6 +1097,39 @@ export function PosScreen() {
       setIsTransitioning(false);
     }
   }
+  async function retryCompletionSync() {
+    const order = activeOrderRef.current;
+    if (!order?.pendingCompletion || isTransitioning) return;
+    setIsTransitioning(true);
+    setError(null);
+    try {
+      await completePrintedOrder(order);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? `Не удалось синхронизировать заказ: ${cause.message}`
+          : "Не удалось синхронизировать заказ. Проверьте подключение и повторите попытку.",
+      );
+    } finally {
+      setIsTransitioning(false);
+    }
+  }
+  function returnPendingCompletionToCart() {
+    const order = activeOrderRef.current;
+    if (!order?.pendingCompletion) return;
+    const recovered: CachedPosOrder = {
+      ...order,
+      pendingCompletion: false,
+      completionSyncError: undefined,
+    };
+    activeOrderRef.current = recovered;
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [recovered.id]: recovered };
+    setCachedOrders(cachedOrdersRef.current);
+    setActive(recovered);
+    setShowCompletionRecovery(false);
+    setError(null);
+    setNotice("Заказ снова доступен для исправления. Клиентский чек уже напечатан и повторно не будет печататься.");
+  }
   async function deleteEmptyOrder() {
     if (
       !active ||
@@ -1066,6 +1138,10 @@ export function PosScreen() {
       isTransitioning
     )
       return;
+    if (active.customerReceiptPrintedAt) {
+      setError("Нельзя удалить заказ, для которого уже напечатан клиентский чек. Исправьте позиции и повторите синхронизацию.");
+      return;
+    }
     const orderId = active.id;
     if (active.syncState !== "synced") {
       const remaining = { ...cachedOrdersRef.current };
@@ -1109,7 +1185,7 @@ export function PosScreen() {
     active?.items.some(
       (item) => item.menuItemId !== null && item.preparesInKitchen && item.sentQuantity < item.quantity,
     ) ?? false;
-  const isOrderLocked = isTransitioning || Boolean(active?.pendingCompletion);
+  const isOrderLocked = isTransitioning || Boolean(active?.pendingCompletion || active?.completedAt);
   const orderedOrders = useMemo(
     () => [...orders].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     [orders],
@@ -1170,12 +1246,16 @@ export function PosScreen() {
               type="button"
               onClick={() => void selectOrder(order.id)}
               disabled={isTransitioning}
-              className={`min-w-24 rounded-xl border px-3 py-2 text-left text-sm transition ${active?.id === order.id ? "border-primary bg-teal-50" : "border-slate-200 bg-white hover:border-primary"}`}
+              className={`min-w-20 rounded-xl border px-3 py-2 text-center text-sm font-bold transition ${active?.id === order.id ? "border-amber-500 bg-amber-200 text-amber-950" : "border-amber-300 bg-amber-100 text-amber-950 hover:border-amber-500"}`}
             >
-              <strong className="block text-slate-900">
-                {orderTitle(order)}
-              </strong>
+              {orderTitle(order)}
             </button>
+          ))}
+          {completedOrders.map((order) => (
+            <div key={order.id} className={`flex min-w-20 items-center rounded-xl border text-sm font-bold transition ${active?.id === order.id ? "border-emerald-600 bg-emerald-200 text-emerald-950" : "border-emerald-300 bg-emerald-100 text-emerald-950"}`}>
+              <button type="button" onClick={() => selectCompletedOrder(order)} className="min-w-0 flex-1 px-3 py-2 text-center" aria-label={`Открыть завершённый заказ ${orderTitle(order)}`}>{orderTitle(order)}</button>
+              <button type="button" onClick={() => dismissCompletedOrder(order.id)} className="mr-1 grid size-6 place-items-center rounded-md text-lg leading-none hover:bg-emerald-300" aria-label={`Убрать завершённый заказ ${orderTitle(order)} из вкладок`} title="Убрать вкладку">×</button>
+            </div>
           ))}
         </div>
         <button
@@ -1240,7 +1320,7 @@ export function PosScreen() {
                   const hasMultipleVariants = item.variants.length > 1;
                   const singleVariant =
                     item.variants.length === 1 ? item.variants[0] : undefined;
-                  const canChooseItem = Boolean(active && !active.pendingCompletion) || (!active && orders.length === 0);
+                  const canChooseItem = Boolean(active && !active.pendingCompletion && !active.completedAt) || (!active && orders.length === 0);
                   const chooseCard = () => {
                     if (!ensureOrderForCatalog()) return;
                     if (hasMultipleVariants) {
@@ -1335,6 +1415,8 @@ export function PosScreen() {
                 <p className="mt-1 text-sm text-slate-500">
                   {active.pendingCompletion
                     ? `Чек напечатан · ожидает синхронизации${active.completionSyncError ? `: ${active.completionSyncError}` : ""}`
+                    : active.customerReceiptPrintedAt
+                      ? "Клиентский чек уже напечатан · заказ можно исправить и сохранить повторно"
                     : active.syncState === "local"
                     ? "Сохранён на устройстве"
                     : active.syncState === "syncing"
@@ -1343,6 +1425,26 @@ export function PosScreen() {
                         ? `Не синхронизировано: ${active.syncError ?? "повторим автоматически"}`
                         : `Заказ №${active.orderNumber} · открыт`}
                 </p>
+              )}
+              {active?.pendingCompletion && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void retryCompletionSync()}
+                    disabled={isTransitioning}
+                    className="rounded-xl bg-primary px-3 py-2 text-sm font-bold text-white hover:bg-primary-strong disabled:opacity-40"
+                  >
+                    Повторить синхронизацию
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCompletionRecovery(true)}
+                    disabled={isTransitioning}
+                    className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-950 hover:bg-amber-100 disabled:opacity-40"
+                  >
+                    Вернуть в корзину
+                  </button>
+                </div>
               )}
               {active && (
                 <button
@@ -1454,9 +1556,9 @@ export function PosScreen() {
                     type="button"
                     onClick={() => void completeOrder()}
                     disabled={isOrderLocked}
-                    className="mt-4 w-full rounded-2xl bg-primary px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(17,170,160,0.2)] disabled:opacity-40"
+                    className={`mt-4 w-full rounded-2xl px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(17,170,160,0.2)] disabled:opacity-70 ${active.completedAt ? "bg-emerald-600" : "bg-primary"}`}
                   >
-                    Завершить заказ
+                    {active.completedAt ? "Заказ завершён" : "Завершить заказ"}
                   </button>
                 )}
               </>
@@ -1472,6 +1574,18 @@ export function PosScreen() {
             <div className="mt-6 flex justify-end gap-3">
               <button type="button" onClick={() => setShowTakeawayConfirm(false)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Отмена</button>
               <button type="button" onClick={() => { setShowTakeawayConfirm(false); changeServiceLocation("takeaway", true); }} className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500">На вынос</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showCompletionRecovery && active?.pendingCompletion && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="completion-recovery-title">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+            <h2 id="completion-recovery-title" className="text-lg font-bold text-slate-950">Вернуть заказ в корзину?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Клиентский чек уже напечатан. Заказ снова станет доступен для исправления, но чек повторно не будет печататься. После исправления нажмите «Завершить заказ», чтобы сохранить его на сервере.</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setShowCompletionRecovery(false)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Оставить как есть</button>
+              <button type="button" onClick={returnPendingCompletionToCart} className="rounded-xl bg-amber-400 px-4 py-2.5 text-sm font-bold text-amber-950 hover:bg-amber-500">Вернуть в корзину</button>
             </div>
           </div>
         </div>
@@ -1684,7 +1798,7 @@ function OrderCard({
   onSend,
 }: OrderCardProps) {
   return (
-    <li className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 rounded-xl border border-slate-200 bg-white p-3 pr-16 sm:grid-cols-[minmax(0,1.4fr)_auto_minmax(8rem,auto)_auto]">
+    <li className="relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 rounded-xl border border-slate-200 bg-white p-3 pr-24 sm:grid-cols-[minmax(0,1.4fr)_auto_minmax(8rem,auto)_auto]">
       {onSend && <button
         type="button"
         onClick={onSend}
@@ -1699,11 +1813,11 @@ function OrderCard({
         type="button"
         onClick={onComment}
         disabled={disabled}
-        className="absolute right-16 top-2 grid size-6 place-items-center rounded-md text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40"
+        className="absolute right-[4.5rem] top-1 grid size-8 place-items-center rounded-lg bg-amber-300 text-base shadow-sm hover:bg-amber-400 disabled:opacity-40"
         aria-label={`Добавить комментарий к блюду ${item.itemName}`}
         title="Комментарий для кухни"
       >
-        ◦
+        💬
       </button>}
       <button
         type="button"
@@ -1871,8 +1985,8 @@ function Toast({
   );
 }
 function orderTitle(order: ActiveOrderSummary) {
-  if (order.tableNumber) return `Стол №${order.tableNumber}`;
-  return order.orderNumber > 0 ? `Заказ №${order.orderNumber}` : "Новый заказ";
+  if (order.tableNumber) return `С ${order.tableNumber}`;
+  return order.orderNumber > 0 ? `З №${order.orderNumber}` : "…";
 }
 function activeTitle(order: ActiveOrder) {
   return order.tableNumber ? `Стол ${order.tableNumber}` : "Новый заказ";

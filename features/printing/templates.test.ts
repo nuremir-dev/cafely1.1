@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CreatedOrder } from "@/features/orders/types";
 
-import { customerReceiptHeightMm, kitchenReceipt, kitchenReceiptHeightMm } from "./templates";
+import { customerReceipt, customerReceiptHeightMm, kitchenReceipt, kitchenReceiptHeightMm } from "./templates";
 
 const order = (items: number): CreatedOrder => ({
   id: "order",
@@ -51,10 +51,11 @@ describe("kitchenReceiptHeightMm", () => {
     expect(ticket).toContain("15.10.2026 · 16:00");
     expect(ticket).toContain("Лагман · Большой");
     expect(ticket).not.toContain("Лагман · Большой · На вынос");
-    expect(ticket).toContain("2 ×");
+    expect(ticket).toContain('class="kitchen-quantity">2</strong>');
+    expect(ticket).not.toContain("2 ×");
     expect(ticket).toContain("ЗАЛ");
     expect(ticket).not.toContain("НА ВЫНОС");
-    expect(ticket).toContain("Без специй");
+    expect(ticket).toContain(" — Без специй");
   });
 
   it("shows takeaway once at the top without a table", () => {
@@ -67,5 +68,25 @@ describe("kitchenReceiptHeightMm", () => {
 describe("customerReceiptHeightMm", () => {
   it("grows the paper length for long customer receipts", () => {
     expect(customerReceiptHeightMm(order(8))).toBeGreaterThan(customerReceiptHeightMm(order(2)));
+  });
+
+  it("uses the same item title rule as the kitchen receipt and enlarges the footer", () => {
+    const receipt = customerReceipt({
+      ...order(1),
+      items: [{
+        menuItemId: "lagman",
+        itemName: "Лагман · Большой · На вынос",
+        unitPriceTyiyn: 25_000,
+        quantity: 1,
+        lineTotalTyiyn: 25_000,
+      }],
+    });
+
+    expect(receipt).toContain("Лагман · Большой");
+    expect(receipt).not.toContain("Лагман · Большой · На вынос");
+    expect(receipt).toContain("customer-thank-you");
+    expect(receipt).toContain("customer-feedback");
+    expect(receipt).toContain("font-size:14px");
+    expect(receipt).toContain("font-size:12px");
   });
 });

@@ -387,7 +387,9 @@ function toPrintable(order: OrderRow, items: ItemRow[], jobs: PrintJobRow[]): Cr
   return { id: order.id, orderNumber: order.order_number, tableNumber: order.table_number, serviceLocation: order.service_location ?? "hall", totalTyiyn: order.total_tyiyn, cashierName: order.cashier_name, createdAt: order.created_at, items: items.map((item) => ({ menuItemId: item.menu_item_id, serviceLocation: item.service_location ?? undefined, itemName: item.item_name, kitchenComment: item.kitchen_comment, unitPriceTyiyn: item.unit_price_tyiyn, quantity: item.quantity, lineTotalTyiyn: item.line_total_tyiyn })), printJobs: jobs.map((job) => ({ id: job.id, type: job.type, status: job.status, attempts: job.attempts, lastError: job.last_error })), created: true };
 }
 function invalidRequest() { return new ApiError("INVALID_REQUEST", 400, "Переданы некорректные данные заказа."); }
-function mapRpcError(error: { code?: string }, fallback: string): ApiError | { code?: string } {
+function mapRpcError(error: { code?: string; message?: string }, fallback: string): ApiError | { code?: string; message?: string } {
+  if (error.code === "42883" || error.code === "PGRST202")
+    return new ApiError("INTERNAL_ERROR", 503, "На сервере не установлено необходимое обновление базы данных. Обратитесь к администратору.");
   if (error.code === "22023") return new ApiError("INVALID_REQUEST", 400, fallback);
   if (error.code === "P0002") return new ApiError("INVALID_REQUEST", 404, "Активный заказ не найден.");
   if (error.code === "23505") return new ApiError("INVALID_REQUEST", 409, "Этот стол уже занят.");
