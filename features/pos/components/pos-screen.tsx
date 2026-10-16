@@ -9,7 +9,7 @@ import type {
   ActiveOrder,
   ActiveOrderSummary,
 } from "@/features/orders/server/active-orders";
-import { findReusableEmptyOrder, readPosCache, type CachedPosOrder, type CompletedPosOrder, type PendingKitchenPrint, writePosCache } from "@/features/pos/local-pos-cache";
+import { calculateCartTotal, findReusableEmptyOrder, readPosCache, type CachedPosOrder, type CompletedPosOrder, type PendingKitchenPrint, writePosCache } from "@/features/pos/local-pos-cache";
 import { getPrintStationId, printCustomerReceiptSnapshot, printKitchenReceiptSnapshot } from "@/features/printing/qz-client";
 import type { CashShift, ShiftDashboard } from "@/features/shifts/types";
 import { TableGrid } from "@/features/tables/components/table-grid";
@@ -29,6 +29,8 @@ type SelectedMenuItem = MenuItem & {
   selectedVariantId: string | null;
   serviceLocation?: "hall" | "takeaway";
   displayName: string;
+  targetLineId?: string;
+  kitchenComment?: string | null;
 };
 const menuCacheKey = "cafeline:pos-menu:v1";
 const menuRevisionKey = "cafeline:menu-revision";
@@ -128,8 +130,12 @@ export function PosScreen() {
   }, []);
 
   useEffect(() => {
+    // The initial render contains empty state. Do not let it overwrite the
+    // IndexedDB snapshot while readPosCache is still restoring local carts and
+    // completed tabs after navigation back to POS.
+    if (!cacheReady) return;
     void writePosCache({ version: 1, activeOrderId: active?.id ?? null, orders: Object.values(cachedOrders), completedOrders, summaries: orders, savedAt: Date.now() });
-  }, [active?.id, cachedOrders, completedOrders, orders]);
+  }, [active?.id, cacheReady, cachedOrders, completedOrders, orders]);
 
   const loadOrder = useCallback(
     async (id: string, revision = activeOrderRevision.current) => {
@@ -782,13 +788,16 @@ export function PosScreen() {
     };
     setActive((current) => {
       if (!current) return current;
-      const next = { ...current, items: [unknownItem, ...current.items], totalTyiyn: current.totalTyiyn + amountTyiyn };
+      const items = [unknownItem, ...current.items];
+      const next = { ...current, items, totalTyiyn: calculateCartTotal(items) };
       activeOrderRef.current = next;
       cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
       setCachedOrders(cachedOrdersRef.current);
       return next;
     });
-    setOrders((current) => current.map((order) => order.id === active.id ? { ...order, totalTyiyn: order.totalTyiyn + amountTyiyn } : order));
+    setOrders((current) => current.map((order) => order.id === active.id
+      ? { ...order, totalTyiyn: calculateCartTotal(activeOrderRef.current?.id === active.id ? activeOrderRef.current.items : []) }
+      : order));
     setUnknownPurchaseAmount("");
     setShowUnknownPurchase(false);
     setNotice("Неизвестная покупка добавлена в заказ.");
@@ -816,14 +825,14 @@ export function PosScreen() {
         : current.items.map((candidate) => candidate.id === item.id
           ? { ...candidate, quantity: nextQuantity, lineTotalTyiyn: candidate.unitPriceTyiyn * nextQuantity }
           : candidate);
-      const next = { ...current, items, totalTyiyn: Math.max(0, current.totalTyiyn + item.unitPriceTyiyn * delta) };
+      const next = { ...current, items, totalTyiyn: calculateCartTotal(items) };
       activeOrderRef.current = next;
       cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
       setCachedOrders(cachedOrdersRef.current);
       return next;
     });
     setOrders((current) => current.map((order) => order.id === orderId
-      ? { ...order, totalTyiyn: Math.max(0, order.totalTyiyn + item.unitPriceTyiyn * delta) }
+      ? { ...order, totalTyiyn: calculateCartTotal(activeOrderRef.current?.id === orderId ? activeOrderRef.current.items : []) }
       : order));
   }
   async function removeItem(item: ActiveOrder["items"][number]) {
@@ -837,7 +846,7 @@ export function PosScreen() {
       const removeUnknownItem = (order: CachedPosOrder) => ({
         ...order,
         items: order.items.filter((candidate) => candidate.id !== item.id),
-        totalTyiyn: Math.max(0, order.totalTyiyn - item.lineTotalTyiyn),
+        totalTyiyn: calculateCartTotal(order.items.filter((candidate) => candidate.id !== item.id)),
       });
       const next = removeUnknownItem(cachedOrdersRef.current[orderId] ?? active);
       cachedOrdersRef.current = { ...cachedOrdersRef.current, [orderId]: next };
@@ -893,7 +902,7 @@ export function PosScreen() {
       const next = {
         ...active,
         items: active.items.filter((candidate) => candidate.id !== item.id),
-        totalTyiyn: Math.max(0, active.totalTyiyn - item.lineTotalTyiyn),
+        totalTyiyn: calculateCartTotal(active.items.filter((candidate) => candidate.id !== item.id)),
         pendingKitchenPrints: [...(active.pendingKitchenPrints ?? []), pending],
       };
       activeOrderRef.current = next;
@@ -991,71 +1000,66 @@ export function PosScreen() {
     item: SelectedMenuItem,
     delta: number,
   ) {
-    setActive((current) => {
-      if (!current || current.id !== orderId) return current;
-      const pendingIndex = current.items.findIndex(
-        (line) =>
-          line.menuItemId === item.id &&
-          line.menuItemVariantId === item.selectedVariantId &&
-          line.serviceLocation === item.serviceLocation &&
-          !line.kitchenComment &&
-          line.sentQuantity === 0,
-      );
-      let items = current.items;
-      if (pendingIndex === -1 && delta > 0)
-        items = [
-          {
-            id: `optimistic-${crypto.randomUUID()}`,
-            menuItemId: item.id,
-            menuItemVariantId: item.selectedVariantId,
-            serviceLocation: item.serviceLocation,
-            itemName: item.displayName,
-            unitPriceTyiyn: item.priceTyiyn,
-            quantity: delta,
-            sentQuantity: 0,
-            lineTotalTyiyn: item.priceTyiyn * delta,
-            addedAt: new Date().toISOString(),
-            preparesInKitchen: item.preparesInKitchen,
-            kitchenComment: null,
-          },
-          ...items,
-        ];
-      else if (pendingIndex >= 0) {
-        const line = items[pendingIndex];
-        const quantity = line.quantity + delta;
-        if (quantity <= 0)
-          items = items.filter((_, index) => index !== pendingIndex);
-        else
-          items = items.map((entry, index) =>
-            index === pendingIndex
-              ? {
-                  ...entry,
-                  quantity,
-                  lineTotalTyiyn: entry.unitPriceTyiyn * quantity,
-                }
-              : entry,
-          );
-      }
-      const next = {
-        ...current,
-        items,
-        totalTyiyn: Math.max(0, current.totalTyiyn + item.priceTyiyn * delta),
-      };
-      activeOrderRef.current = next;
-      cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
-      setCachedOrders(cachedOrdersRef.current);
-      return next;
-    });
+    const current = activeOrderRef.current;
+    if (!current || current.id !== orderId) return;
+    const pendingIndex = item.targetLineId
+      ? current.items.findIndex((line) => line.id === item.targetLineId && line.sentQuantity === 0)
+      : current.items.findIndex(
+          (line) =>
+            line.menuItemId === item.id &&
+            line.menuItemVariantId === item.selectedVariantId &&
+            line.serviceLocation === item.serviceLocation &&
+            (line.kitchenComment ?? null) === (item.kitchenComment ?? null) &&
+            line.sentQuantity === 0,
+        );
+    let items = current.items;
+    if (pendingIndex === -1 && delta > 0)
+      items = [
+        {
+          id: `optimistic-${crypto.randomUUID()}`,
+          menuItemId: item.id,
+          menuItemVariantId: item.selectedVariantId,
+          serviceLocation: item.serviceLocation,
+          itemName: item.displayName,
+          unitPriceTyiyn: item.priceTyiyn,
+          quantity: delta,
+          sentQuantity: 0,
+          lineTotalTyiyn: item.priceTyiyn * delta,
+          addedAt: new Date().toISOString(),
+          preparesInKitchen: item.preparesInKitchen,
+          kitchenComment: item.kitchenComment ?? null,
+        },
+        ...items,
+      ];
+    else if (pendingIndex >= 0) {
+      const line = items[pendingIndex];
+      const quantity = line.quantity + delta;
+      if (quantity <= 0)
+        items = items.filter((_, index) => index !== pendingIndex);
+      else
+        items = items.map((entry, index) =>
+          index === pendingIndex
+            ? {
+                ...entry,
+                quantity,
+                lineTotalTyiyn: entry.unitPriceTyiyn * quantity,
+              }
+            : entry,
+        );
+    }
+    const next = {
+      ...current,
+      items,
+      totalTyiyn: calculateCartTotal(items),
+    };
+    activeOrderRef.current = next;
+    cachedOrdersRef.current = { ...cachedOrdersRef.current, [next.id]: next };
+    setCachedOrders(cachedOrdersRef.current);
+    setActive(next);
     setOrders((current) =>
       current.map((order) =>
         order.id === orderId
-          ? {
-              ...order,
-              totalTyiyn: Math.max(
-                0,
-                order.totalTyiyn + item.priceTyiyn * delta,
-              ),
-            }
+          ? toActiveOrderSummary(next)
           : order,
       ),
     );
@@ -1063,13 +1067,24 @@ export function PosScreen() {
   async function completeOrder() {
     if (
       !active ||
-      active.items.length === 0 ||
       active.pendingCompletion ||
       isTransitioning
     )
       return;
+    const totalTyiyn = calculateCartTotal(active.items);
+    if (active.items.length === 0 || totalTyiyn <= 0) {
+      setError("Нельзя завершить пустой заказ или заказ с нулевой суммой.");
+      return;
+    }
     activeOrderRevision.current += 1;
-    let order = active;
+    let order = { ...active, totalTyiyn };
+    if (order.totalTyiyn !== active.totalTyiyn) {
+      activeOrderRef.current = order;
+      cachedOrdersRef.current = { ...cachedOrdersRef.current, [order.id]: order };
+      setCachedOrders(cachedOrdersRef.current);
+      setActive(order);
+      setOrders((current) => current.map((summary) => summary.id === order.id ? toActiveOrderSummary(order) : summary));
+    }
     setIsTransitioning(true);
     setNotice(null);
     try {
@@ -1181,6 +1196,7 @@ export function PosScreen() {
 
   const itemCount =
     active?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0;
+  const activeTotalTyiyn = active ? calculateCartTotal(active.items) : 0;
   const hasPendingKitchenItems =
     active?.items.some(
       (item) => item.menuItemId !== null && item.preparesInKitchen && item.sentQuantity < item.quantity,
@@ -1189,6 +1205,10 @@ export function PosScreen() {
   const orderedOrders = useMemo(
     () => [...orders].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     [orders],
+  );
+  const orderedCompletedOrders = useMemo(
+    () => [...completedOrders].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+    [completedOrders],
   );
 
   async function openShift() {
@@ -1239,24 +1259,30 @@ export function PosScreen() {
   return (
     <div className="space-y-4">
       <section className="flex items-center gap-2 overflow-hidden rounded-2xl border border-white/80 bg-white/90 p-2 shadow-[0_8px_24px_rgba(56,72,65,0.07)] backdrop-blur-xl">
-        <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto py-0.5 pr-0.5">
-          {orderedOrders.map((order) => (
-            <button
-              key={order.id}
-              type="button"
-              onClick={() => void selectOrder(order.id)}
-              disabled={isTransitioning}
-              className={`min-w-20 rounded-xl border px-3 py-2 text-center text-sm font-bold transition ${active?.id === order.id ? "border-amber-500 bg-amber-200 text-amber-950" : "border-amber-300 bg-amber-100 text-amber-950 hover:border-amber-500"}`}
-            >
-              {orderTitle(order)}
-            </button>
-          ))}
-          {completedOrders.map((order) => (
-            <div key={order.id} className={`flex min-w-20 items-center rounded-xl border text-sm font-bold transition ${active?.id === order.id ? "border-emerald-600 bg-emerald-200 text-emerald-950" : "border-emerald-300 bg-emerald-100 text-emerald-950"}`}>
-              <button type="button" onClick={() => selectCompletedOrder(order)} className="min-w-0 flex-1 px-3 py-2 text-center" aria-label={`Открыть завершённый заказ ${orderTitle(order)}`}>{orderTitle(order)}</button>
-              <button type="button" onClick={() => dismissCompletedOrder(order.id)} className="mr-1 grid size-6 place-items-center rounded-md text-lg leading-none hover:bg-emerald-300" aria-label={`Убрать завершённый заказ ${orderTitle(order)} из вкладок`} title="Убрать вкладку">×</button>
+        <div className="flex min-w-0 flex-1 overflow-x-auto py-0.5 pr-0.5">
+          {orderedCompletedOrders.length > 0 && (
+            <div className="flex shrink-0 gap-2 border-r border-slate-200 pr-2" aria-label="Завершённые заказы">
+              {orderedCompletedOrders.map((order) => (
+                <div key={order.id} className={`flex min-w-20 items-center rounded-xl border text-sm font-bold transition ${active?.id === order.id ? "border-emerald-600 bg-emerald-200 text-emerald-950" : "border-emerald-300 bg-emerald-100 text-emerald-950"}`}>
+                  <button type="button" onClick={() => selectCompletedOrder(order)} className="min-w-0 flex-1 px-3 py-2 text-center" aria-label={`Открыть завершённый заказ ${orderTitle(order)}`}>{orderTitle(order)}</button>
+                  <button type="button" onClick={() => dismissCompletedOrder(order.id)} className="mr-1 grid size-6 place-items-center rounded-md text-lg leading-none hover:bg-emerald-300" aria-label={`Убрать завершённый заказ ${orderTitle(order)} из вкладок`} title="Убрать вкладку">×</button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+          <div className={`flex shrink-0 gap-2 ${orderedCompletedOrders.length > 0 ? "pl-2" : ""}`} aria-label="Незавершённые заказы">
+            {orderedOrders.map((order) => (
+              <button
+                key={order.id}
+                type="button"
+                onClick={() => void selectOrder(order.id)}
+                disabled={isTransitioning}
+                className={`min-w-20 rounded-xl border px-3 py-2 text-center text-sm font-bold transition ${active?.id === order.id ? "border-amber-500 bg-amber-200 text-amber-950" : "border-amber-300 bg-amber-100 text-amber-950 hover:border-amber-500"}`}
+              >
+                {orderTitle(order)}
+              </button>
+            ))}
+          </div>
         </div>
         <button
           type="button"
@@ -1515,7 +1541,7 @@ export function PosScreen() {
                   <div>
                     <span className="block text-slate-500">Сумма заказа</span>
                     <strong className="text-lg">
-                      {formatSom(active.totalTyiyn)}
+                      {formatSom(activeTotalTyiyn)}
                     </strong>
                   </div>
                 </div>
@@ -1546,7 +1572,7 @@ export function PosScreen() {
                   <button
                     type="button"
                     onClick={() => void deleteEmptyOrder()}
-                    disabled={isOrderLocked}
+                    disabled={isOrderLocked || activeTotalTyiyn <= 0}
                     className="mt-4 w-full rounded-2xl bg-red-500 px-4 py-4 text-base font-bold text-white shadow-[0_8px_18px_rgba(239,68,68,0.2)] hover:bg-red-600 disabled:opacity-40"
                   >
                     Удалить заказ
@@ -2000,7 +2026,7 @@ function toLocalCustomerReceipt(order: CachedPosOrder): CreatedOrder {
     orderNumber: order.orderNumber,
     tableNumber: order.tableNumber,
     serviceLocation: order.serviceLocation,
-    totalTyiyn: order.totalTyiyn,
+    totalTyiyn: calculateCartTotal(order.items),
     cashierName: order.cashierName,
     createdAt: order.createdAt,
     items: order.items.map((item) => ({
@@ -2040,6 +2066,7 @@ function selectMenuItem(
     selectedVariantId: variant?.id ?? null,
     serviceLocation,
     displayName: itemName,
+    kitchenComment: null,
   };
 }
 function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
@@ -2057,6 +2084,8 @@ function selectOrderItem(item: ActiveOrder["items"][number]): SelectedMenuItem {
     selectedVariantId: item.menuItemVariantId,
     serviceLocation: item.serviceLocation,
     displayName: displayItemName(item.itemName),
+    targetLineId: item.sentQuantity === 0 ? item.id : undefined,
+    kitchenComment: item.kitchenComment ?? null,
   };
 }
 function toActiveOrderSummary(order: ActiveOrder): ActiveOrderSummary {

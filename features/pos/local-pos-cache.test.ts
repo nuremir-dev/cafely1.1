@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calculateCartTotal,
   findReusableEmptyOrder,
   type CachedPosOrder,
 } from "./local-pos-cache";
@@ -59,5 +60,15 @@ describe("findReusableEmptyOrder", () => {
 
   it("returns null when no editable empty order exists", () => {
     expect(findReusableEmptyOrder([order({ pendingCompletion: true })])).toBeNull();
+  });
+});
+
+describe("calculateCartTotal", () => {
+  it("derives the total from lines instead of a stale order-level value", () => {
+    expect(calculateCartTotal([
+      { lineTotalTyiyn: 12_000 },
+      { lineTotalTyiyn: 8_500 },
+    ])).toBe(20_500);
+    expect(calculateCartTotal([])).toBe(0);
   });
 });

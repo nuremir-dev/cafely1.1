@@ -1,6 +1,6 @@
 "use client";
 
-import type { ActiveOrder, ActiveOrderSummary } from "@/features/orders/server/active-orders";
+import type { ActiveOrder, ActiveOrderItem, ActiveOrderSummary } from "@/features/orders/server/active-orders";
 
 const databaseName = "cafeline-pos";
 const storeName = "state";
@@ -60,6 +60,11 @@ export function findReusableEmptyOrder(
         !order.customerReceiptPrintedAt,
     )
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0] ?? null;
+}
+
+/** The total must always be derived from the actual cart lines, never from a separate delta. */
+export function calculateCartTotal(items: ReadonlyArray<Pick<ActiveOrderItem, "lineTotalTyiyn">>): number {
+  return items.reduce((total, item) => total + item.lineTotalTyiyn, 0);
 }
 
 function openDatabase(): Promise<IDBDatabase | null> {

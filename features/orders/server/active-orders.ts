@@ -287,7 +287,7 @@ export async function completeLocalCart(id: string, input: unknown): Promise<Cre
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase.rpc("complete_cafeline_local_cart", {
     p_order_id: id,
-    p_items: parsed.data.items.map((item) => ({ menu_item_id: item.menuItemId, menu_item_variant_id: item.menuItemVariantId, quantity: item.quantity, ad_hoc_amount_tyiyn: "adHocAmountTyiyn" in item ? item.adHocAmountTyiyn : null, service_location: item.menuItemId === null ? null : item.serviceLocation ?? "hall" })),
+    p_items: parsed.data.items.map((item) => ({ menu_item_id: item.menuItemId, menu_item_variant_id: item.menuItemVariantId, quantity: item.quantity, ad_hoc_amount_tyiyn: "adHocAmountTyiyn" in item ? item.adHocAmountTyiyn : null, service_location: item.menuItemId === null ? null : item.serviceLocation ?? "hall", kitchen_comment: "kitchenComment" in item ? item.kitchenComment?.trim() || null : null })),
     p_customer_receipt_printed: parsed.data.customerReceiptPrinted ?? false,
   });
   if (error) throw mapRpcError(error, "Не удалось сохранить корзину.");
