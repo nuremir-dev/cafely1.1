@@ -18,6 +18,9 @@ type MenuResponse = { data: MenuCatalog };
 type ActiveOrdersResponse = { data: ActiveOrder[] };
 type ActiveOrderResponse = { data: ActiveOrder };
 type PrintableResponse = { data: CreatedOrder };
+type AutoCloseStaleShiftResponse = {
+  data: { outcome: "none" | "closed" | "blocked"; shift: CashShift | null };
+};
 type TableMapResponse = {
   data: { cells: number[]; rows: number; columns: number };
 };
@@ -62,6 +65,7 @@ export function PosScreen() {
   const [shiftName, setShiftName] = useState("");
   const [isOpeningShift, setIsOpeningShift] = useState(false);
   const [shiftError, setShiftError] = useState<string | null>(null);
+  const [staleShiftBlock, setStaleShiftBlock] = useState<CashShift | null>(null);
   const [tableMap, setTableMap] = useState({
     cells: Array.from({ length: 12 }, (_, index) => index),
     rows: 6,
@@ -97,13 +101,27 @@ export function PosScreen() {
   }, []);
 
   useEffect(() => {
-    void fetch("/api/shifts", { cache: "no-store" })
-      .then(async (response) => {
-        const payload: unknown = await response.json();
-        if (!response.ok || !isShiftDashboardResponse(payload))
-          throw new Error(message(payload, "Не удалось проверить смену."));
-        setCashShift(payload.data.currentShift);
-      })
+    void (async () => {
+      const autoCloseResponse = await fetch("/api/shifts/auto-close-stale", { method: "POST" });
+      const autoClosePayload: unknown = await autoCloseResponse.json();
+      if (!autoCloseResponse.ok || !isAutoCloseStaleShiftResponse(autoClosePayload))
+        throw new Error(message(autoClosePayload, "Не удалось проверить незакрытую смену."));
+      if (autoClosePayload.data.outcome === "blocked") {
+        setStaleShiftBlock(autoClosePayload.data.shift);
+        setCashShift(null);
+        return;
+      }
+      if (autoClosePayload.data.outcome === "closed" && autoClosePayload.data.shift) {
+        const shift = autoClosePayload.data.shift;
+        setNotice(`Смена за ${formatBusinessDate(shift.businessDate)}, открытая ${shift.openedBy}, автоматически закрыта в 00:00.`);
+      }
+      const response = await fetch("/api/shifts", { cache: "no-store" });
+      const payload: unknown = await response.json();
+      if (!response.ok || !isShiftDashboardResponse(payload))
+        throw new Error(message(payload, "Не удалось проверить смену."));
+      setStaleShiftBlock(null);
+      setCashShift(payload.data.currentShift);
+    })()
       .catch((cause) => {
         setShiftError(cause instanceof Error ? cause.message : "Не удалось проверить смену.");
         setCashShift(null);
@@ -1033,6 +1051,9 @@ export function PosScreen() {
   if (cashShift === undefined) {
     return <p className="rounded-2xl bg-white p-6 text-sm text-slate-600 shadow-sm">Проверяем смену…</p>;
   }
+  if (staleShiftBlock) {
+    return <section className="mx-auto mt-10 max-w-md rounded-[1.7rem] border border-amber-200 bg-amber-50 p-6 shadow-[0_10px_34px_rgba(56,72,65,0.1)]"><p className="text-sm font-semibold text-amber-900">Незакрытая смена</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">Сначала завершите вчерашние заказы</h1><p className="mt-3 text-sm leading-6 text-slate-700">Смена за {formatBusinessDate(staleShiftBlock.businessDate)}, открытая {staleShiftBlock.openedBy}, содержит незавершённые заказы. Завершите или отмените их, затем закройте смену вручную на экране «Смены».</p></section>;
+  }
   if (!cashShift) {
     return (
       <section className="mx-auto mt-10 max-w-md rounded-[1.7rem] border border-white/80 bg-white/90 p-6 shadow-[0_10px_34px_rgba(56,72,65,0.1)] backdrop-blur-xl">
@@ -1902,6 +1923,9 @@ function isShiftDashboardResponse(value: unknown): value is { data: ShiftDashboa
 function isCashShiftResponse(value: unknown): value is { data: CashShift } {
   return Boolean(value && typeof value === "object" && "data" in value && value.data && typeof value.data === "object" && "businessDate" in value.data && "status" in value.data);
 }
+function isAutoCloseStaleShiftResponse(value: unknown): value is AutoCloseStaleShiftResponse {
+  return Boolean(value && typeof value === "object" && "data" in value && value.data && typeof value.data === "object" && "outcome" in value.data && "shift" in value.data);
+}
 function isTableMapResponse(value: unknown): value is TableMapResponse {
   return Boolean(
     value &&
@@ -1925,4 +1949,7 @@ function message(value: unknown, fallback: string) {
   )
     return fallback;
   return value.error.message;
+}
+function formatBusinessDate(value: string) {
+  return new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Bishkek", dateStyle: "short" }).format(new Date(`${value}T00:00:00+06:00`));
 }

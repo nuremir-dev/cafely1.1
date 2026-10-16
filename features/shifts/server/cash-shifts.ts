@@ -17,9 +17,17 @@ type ShiftRow = {
   opened_at: string;
   closed_by: string | null;
   closed_at: string | null;
+  close_mode: "manual" | "overnight_auto";
   status: "open" | "closed";
   sales_total_tyiyn: number;
   sold_item_count: number;
+};
+
+type AutoCloseStaleShiftRow = ShiftRow & { outcome: "closed" | "blocked" };
+
+export type AutoCloseStaleShiftResult = {
+  outcome: "none" | "closed" | "blocked";
+  shift: CashShift | null;
 };
 
 export async function getShiftDashboard(selectedDate?: string | null): Promise<ShiftDashboard> {
@@ -28,7 +36,7 @@ export async function getShiftDashboard(selectedDate?: string | null): Promise<S
   const supabase = createSupabaseAdminClient();
   let query = supabase
     .from("cash_shifts")
-    .select("id, business_date, opened_by, opened_at, closed_by, closed_at, status, sales_total_tyiyn, sold_item_count")
+    .select("id, business_date, opened_by, opened_at, closed_by, closed_at, close_mode, status, sales_total_tyiyn, sold_item_count")
     .order("business_date", { ascending: false })
     .order("opened_at", { ascending: false });
   if (selectedDate) query = query.eq("business_date", selectedDate);
@@ -36,7 +44,7 @@ export async function getShiftDashboard(selectedDate?: string | null): Promise<S
     query,
     supabase
       .from("cash_shifts")
-      .select("id, business_date, opened_by, opened_at, closed_by, closed_at, status, sales_total_tyiyn, sold_item_count")
+      .select("id, business_date, opened_by, opened_at, closed_by, closed_at, close_mode, status, sales_total_tyiyn, sold_item_count")
       .eq("status", "open")
       .maybeSingle(),
   ]);
@@ -48,11 +56,18 @@ export async function getShiftDashboard(selectedDate?: string | null): Promise<S
 export async function getCurrentCashShift(): Promise<CashShift | null> {
   const { data, error } = await createSupabaseAdminClient()
     .from("cash_shifts")
-    .select("id, business_date, opened_by, opened_at, closed_by, closed_at, status, sales_total_tyiyn, sold_item_count")
+    .select("id, business_date, opened_by, opened_at, closed_by, closed_at, close_mode, status, sales_total_tyiyn, sold_item_count")
     .eq("status", "open")
     .maybeSingle();
   if (error) throw error;
   return data ? toCashShift(data as ShiftRow) : null;
+}
+
+export async function autoCloseStaleCashShift(): Promise<AutoCloseStaleShiftResult> {
+  const { data, error } = await createSupabaseAdminClient().rpc("auto_close_stale_cafeline_cash_shift");
+  if (error) throw error;
+  const row = (data as AutoCloseStaleShiftRow[] | null)?.[0];
+  return row ? { outcome: row.outcome, shift: toCashShift(row) } : { outcome: "none", shift: null };
 }
 
 export async function openCashShift(input: unknown): Promise<CashShift> {
@@ -88,6 +103,7 @@ function toCashShift(row: ShiftRow): CashShift {
     openedAt: row.opened_at,
     closedBy: row.closed_by,
     closedAt: row.closed_at,
+    closeMode: row.close_mode ?? "manual",
     status: row.status,
     salesTotalTyiyn: row.sales_total_tyiyn,
     soldItemCount: row.sold_item_count,
