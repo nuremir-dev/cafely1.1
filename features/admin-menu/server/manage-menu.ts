@@ -132,7 +132,23 @@ export async function createMenuItem(input: unknown): Promise<AdminMenuItem> {
 export async function updateMenuItem(id: string, input: unknown): Promise<AdminMenuItem> {
   assertUuid(id);
   const value = parseMenuItem(input);
-  const { error } = await createSupabaseAdminClient()
+  const supabase = createSupabaseAdminClient();
+  const { data: openOrder, error: openOrderError } = await supabase
+    .from("orders")
+    .select("id")
+    .eq("status", "open")
+    .limit(1)
+    .maybeSingle();
+  if (openOrderError) throw openOrderError;
+  if (openOrder) {
+    throw new ApiError(
+      "INVALID_REQUEST",
+      409,
+      "Нельзя изменять блюдо, пока есть активные незавершённые заказы. Сначала завершите или отмените их.",
+    );
+  }
+
+  const { error } = await supabase
     .from("menu_items")
     .update({
       category_id: value.categoryId,
@@ -173,6 +189,7 @@ function assertUuid(id: string) {
 }
 
 function toDatabaseError(error: { code?: string; constraint?: string }, fallbackMessage: string): ApiError | { code?: string; constraint?: string } {
+  if (error.code === "55000") return new ApiError("INVALID_REQUEST", 409, "Нельзя изменять меню, пока есть активные незавершённые заказы. Сначала завершите или отмените их.");
   if (error.constraint === "menu_items_one_container_idx") return new ApiError("INVALID_REQUEST", 409, "В меню уже назначен контейнер.");
   if (error.code === "23505") return new ApiError("INVALID_REQUEST", 409, "Такое название уже существует.");
   if (error.code === "23503") return new ApiError("INVALID_REQUEST", 400, "Указанная категория не существует.");

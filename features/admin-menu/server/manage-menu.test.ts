@@ -23,11 +23,14 @@ function listQuery(result: Result) {
   const query = {
     select: vi.fn(),
     eq: vi.fn(),
+    limit: vi.fn(),
     order: vi.fn(),
+    maybeSingle: vi.fn().mockResolvedValue(result),
     then: (resolve: (value: Result) => unknown) => Promise.resolve(result).then(resolve),
   };
   query.select.mockReturnValue(query);
   query.eq.mockReturnValue(query);
+  query.limit.mockReturnValue(query);
   query.order.mockReturnValue(query);
   return query;
 }
@@ -104,10 +107,12 @@ describe("menu administration service", () => {
       data: { id: itemId, category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, requires_service_location: true, prepares_in_kitchen: true, is_container: true },
       error: null,
     });
+    const noOpenOrdersQuery = listQuery({ data: null, error: null });
     const variantsQuery = listQuery({ data: [], error: null });
     const client = {
       from: vi.fn()
         .mockReturnValueOnce(createdQuery)
+        .mockReturnValueOnce(noOpenOrdersQuery)
         .mockReturnValueOnce(updatedQuery)
         .mockReturnValueOnce(updatedQuery)
         .mockReturnValueOnce(variantsQuery),
@@ -119,6 +124,21 @@ describe("menu administration service", () => {
     await expect(updateMenuItem(itemId, { ...itemInput, priceTyiyn: 4_500, isActive: false, requiresServiceLocation: true, preparesInKitchen: true, isContainer: true })).resolves.toMatchObject({ priceTyiyn: 4_500, isActive: false, requiresServiceLocation: true, preparesInKitchen: true, isContainer: true });
     expect(createdQuery.insert).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_000, sort_order: 3, is_active: true, is_quick: false, requires_service_location: false, prepares_in_kitchen: false, is_container: false });
     expect(updatedQuery.update).toHaveBeenCalledWith({ category_id: categoryId, name: "Чай", price_tyiyn: 4_500, sort_order: 3, is_active: false, is_quick: false, requires_service_location: true, prepares_in_kitchen: true, is_container: true });
+  });
+
+  it("does not allow a menu item to change while an order is still open", async () => {
+    const openOrderQuery = listQuery({ data: { id: "4a68884e-fd8e-49de-bce7-e51d638d4381" }, error: null });
+    const updateQuery = mutationQuery({ data: null, error: null });
+    mocks.createSupabaseAdminClient.mockReturnValue({
+      from: vi.fn().mockReturnValueOnce(openOrderQuery).mockReturnValueOnce(updateQuery),
+    });
+
+    await expect(updateMenuItem(itemId, itemInput)).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      status: 409,
+      message: "Нельзя изменять блюдо, пока есть активные незавершённые заказы. Сначала завершите или отмените их.",
+    });
+    expect(updateQuery.update).not.toHaveBeenCalled();
   });
 
   it("rejects malformed values before database access", async () => {
